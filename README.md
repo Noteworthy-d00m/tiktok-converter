@@ -69,4 +69,3 @@ also has a headless self-test mode that runs when `TTC_TEST_FILE` is set.
 FFmpeg is not bundled. The installer downloads a Windows build from
 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (fallback: [BtbN](https://github.com/BtbN/FFmpeg-Builds)) and
 runs it as a separate program. FFmpeg is licensed under the LGPL/GPL, see <https://ffmpeg.org/legal.html>.
-"# tiktok-converter" 
