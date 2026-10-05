@@ -14,18 +14,30 @@ static class Launcher
 {
     const string AppName = "TikTok Converter";
     const string RegKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\TikTokConverter";
-    static readonly string[] FfmpegUrls = {
-        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-        "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+    // { zip url, checksum url, file name to look for in the checksum file (null = file holds just the hash) }
+    static readonly string[][] FfmpegSources = {
+        new[] { "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+                "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256", null },
+        new[] { "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
+                "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/checksums.sha256", "ffmpeg-master-latest-win64-gpl.zip" }
     };
 
-    // TTC_* variables only exist so the installer can be tested without touching the real machine
-    static bool TestMode { get { return Environment.GetEnvironmentVariable("TTC_INSTALL_DIR") != null; } }
+    // TTC_* variables only exist so the installer can be tested without touching the real machine.
+    // They are compiled in only for test builds (Build.ps1 -Test); the release exe ignores them completely.
+    static string Env(string name)
+    {
+#if TESTHOOKS
+        return Environment.GetEnvironmentVariable(name);
+#else
+        return null;
+#endif
+    }
+    static bool TestMode { get { return Env("TTC_INSTALL_DIR") != null; } }
     static string InstallDir
     {
         get
         {
-            string d = Environment.GetEnvironmentVariable("TTC_INSTALL_DIR");
+            string d = Env("TTC_INSTALL_DIR");
             return d ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TikTokConverter");
         }
     }
@@ -43,7 +55,7 @@ static class Launcher
             if (!installed)
             {
                 bool update = File.Exists(InstalledExe);
-                if (Environment.GetEnvironmentVariable("TTC_YES") == null)
+                if (Env("TTC_YES") == null)
                 {
                     string msg = (update ? "Update " : "Install ") + AppName + "?\n\n" +
                         "  - Copies the app to " + InstallDir + "\n" +
@@ -54,7 +66,7 @@ static class Launcher
                 }
                 string error = RunSetup(true);
                 if (error != null) MessageBox.Show(error, AppName + " Setup");
-                if (Environment.GetEnvironmentVariable("TTC_NO_LAUNCH") == null && File.Exists(InstalledExe))
+                if (Env("TTC_NO_LAUNCH") == null && File.Exists(InstalledExe))
                     Process.Start(new ProcessStartInfo(InstalledExe) { UseShellExecute = false });
                 return;
             }
@@ -111,7 +123,7 @@ static class Launcher
     static bool HasFfmpeg()
     {
         if (BothIn(Path.Combine(InstallDir, "ffmpeg", "bin"))) return true;
-        if (Environment.GetEnvironmentVariable("TTC_NO_SYSTEM_FFMPEG") != null) return false;   // test hook
+        if (Env("TTC_NO_SYSTEM_FFMPEG") != null) return false;   // test hook
         string path = Environment.GetEnvironmentVariable("PATH") ?? "";
         foreach (string p in path.Split(';'))
         {
@@ -166,25 +178,27 @@ static class Launcher
     {
         string binDir = Path.Combine(InstallDir, "ffmpeg", "bin");
         string zip = Path.Combine(Path.GetTempPath(), "ttc_ffmpeg.zip");
-        string local = Environment.GetEnvironmentVariable("TTC_FFMPEG_ZIP");   // test hook: use a local zip instead of downloading
+        string local = Env("TTC_FFMPEG_ZIP");   // test hook: use a local zip instead of downloading
         string lastError = "";
         bool have = false;
         if (local != null && File.Exists(local)) { zip = local; have = true; }
         else
         {
-            foreach (string url in FfmpegUrls)
+            foreach (string[] src in FfmpegSources)
             {
                 try
                 {
                     f.Status("Downloading FFmpeg...", 8);
-                    Download(url, zip, delegate (long got, long total)
+                    Download(src[0], zip, delegate (long got, long total)
                     {
                         int pct = total > 0 ? (int)(got * 100 / total) : 0;
                         f.Status("Downloading FFmpeg...  " + (got >> 20) + (total > 0 ? " / " + (total >> 20) : "") + " MB", 8 + pct * 80 / 100);
                     });
+                    f.Status("Verifying download...", 89);
+                    VerifySha256(zip, src[1], src[2]);
                     have = true; break;
                 }
-                catch (Exception ex) { lastError = ex.Message; }
+                catch (Exception ex) { lastError = ex.Message; try { File.Delete(zip); } catch { } }
             }
         }
         if (!have)
@@ -212,6 +226,42 @@ static class Launcher
 
     delegate void ProgressCb(long got, long total);
 
+    // If the publisher's checksum can be fetched it MUST match, otherwise the download is rejected.
+    // (If the checksum file itself is unreachable we continue: the zip still came over verified HTTPS.)
+    static void VerifySha256(string file, string checksumUrl, string nameInList)
+    {
+        string text;
+        try
+        {
+            string tmp = Path.Combine(Path.GetTempPath(), "ttc_ffmpeg.sha256");
+            Download(checksumUrl, tmp, delegate (long a, long b) { });
+            text = File.ReadAllText(tmp);
+            try { File.Delete(tmp); } catch { }
+        }
+        catch { return; }
+
+        string expected = null;
+        foreach (string line in text.Split('\n'))
+        {
+            string l = line.Trim();
+            if (l.Length < 64) continue;
+            if (nameInList != null && l.IndexOf(nameInList, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            expected = l.Substring(0, 64).ToLowerInvariant();
+            break;
+        }
+        if (expected == null) return;
+
+        string actual;
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+        using (var fs = File.OpenRead(file))
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (byte b in sha.ComputeHash(fs)) sb.Append(b.ToString("x2"));
+            actual = sb.ToString();
+        }
+        if (actual != expected) throw new Exception("checksum mismatch (the download is corrupted or has been tampered with)");
+    }
+
     static void Download(string url, string dest, ProgressCb cb)
     {
         ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;   // TLS 1.2
@@ -220,25 +270,28 @@ static class Launcher
         req.AllowAutoRedirect = true;
         req.Timeout = 30000; req.ReadWriteTimeout = 30000;
         using (WebResponse resp = req.GetResponse())
-        using (Stream s = resp.GetResponseStream())
-        using (FileStream fs = File.Create(dest))
         {
-            long total = resp.ContentLength, got = 0;
-            var buf = new byte[81920];
-            int n, tick = Environment.TickCount;
-            while ((n = s.Read(buf, 0, buf.Length)) > 0)
+            if (resp.ResponseUri.Scheme != Uri.UriSchemeHttps) throw new Exception("download was redirected to a non-HTTPS address");
+            using (Stream s = resp.GetResponseStream())
+            using (FileStream fs = File.Create(dest))
             {
-                fs.Write(buf, 0, n); got += n;
-                if (Environment.TickCount - tick > 150) { cb(got, total); tick = Environment.TickCount; }
+                long total = resp.ContentLength, got = 0;
+                var buf = new byte[81920];
+                int n, tick = Environment.TickCount;
+                while ((n = s.Read(buf, 0, buf.Length)) > 0)
+                {
+                    fs.Write(buf, 0, n); got += n;
+                    if (Environment.TickCount - tick > 150) { cb(got, total); tick = Environment.TickCount; }
+                }
+                cb(got, total);
             }
-            cb(got, total);
         }
     }
 
     // ---------- shortcuts / uninstall ----------
     static string[] ShortcutDirs()
     {
-        string d = Environment.GetEnvironmentVariable("TTC_SHORTCUT_DIR");
+        string d = Env("TTC_SHORTCUT_DIR");
         if (d != null) return new[] { d };
         return new[] { Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), Environment.GetFolderPath(Environment.SpecialFolder.Programs) };
     }
@@ -284,7 +337,7 @@ static class Launcher
 
     static void Uninstall()
     {
-        if (Environment.GetEnvironmentVariable("TTC_YES") == null &&
+        if (Env("TTC_YES") == null &&
             MessageBox.Show("Remove " + AppName + " from this PC?\n\nYour converted videos are not touched.", AppName,
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
 
@@ -303,11 +356,14 @@ static class Launcher
             }
             catch { }
         }
-        // this exe is running from the folder, so let a helper delete it a moment after we exit
+        // this exe is running from the folder, so let a helper delete it a moment after we exit.
+        // Safety: only ever remove a folder that is really ours.
+        if (!string.Equals(Path.GetFileName(InstallDir.TrimEnd('\\', '/')), "TikTokConverter", StringComparison.OrdinalIgnoreCase)
+            && !File.Exists(Path.Combine(InstallDir, "TikTokConverter.exe"))) return;
         var psi = new ProcessStartInfo("cmd.exe", "/c ping 127.0.0.1 -n 3 >nul & rmdir /s /q \"" + InstallDir + "\"");
         psi.CreateNoWindow = true; psi.UseShellExecute = false;
         Process.Start(psi);
-        if (Environment.GetEnvironmentVariable("TTC_YES") == null)
+        if (Env("TTC_YES") == null)
             MessageBox.Show(AppName + " was removed.", AppName);
     }
 }

@@ -45,9 +45,24 @@ copy it to your Desktop.
 
 ### Testing hooks
 
-`Launcher.cs` honours `TTC_INSTALL_DIR`, `TTC_SHORTCUT_DIR`, `TTC_YES`, `TTC_NO_LAUNCH`, `TTC_FFMPEG_ZIP` and
-`TTC_NO_SYSTEM_FFMPEG` so the installer can be tested without touching the real machine. The script has a
-headless self-test mode that runs when `TTC_TEST_FILE` is set.
+`powershell -File .\Build.ps1 -Test` builds `TikTokConverter-test.exe`, which honours `TTC_INSTALL_DIR`,
+`TTC_SHORTCUT_DIR`, `TTC_YES`, `TTC_NO_LAUNCH`, `TTC_FFMPEG_ZIP` and `TTC_NO_SYSTEM_FFMPEG`, so the installer can be
+tested without touching the real machine. The normal (release) build ignores these variables completely. The script
+also has a headless self-test mode that runs when `TTC_TEST_FILE` is set.
+
+## Security notes
+
+- Installs per-user under `%LOCALAPPDATA%`; never asks for admin rights and writes nothing system-wide
+  (only HKCU uninstall entry and shortcuts).
+- FFmpeg is downloaded over HTTPS only, and its SHA-256 is checked against the publisher's checksum file when
+  available. Only `ffmpeg.exe` and `ffprobe.exe` are extracted, to a fixed folder.
+- FFmpeg is started with fixed argument lists (no shell), file paths are quoted, trim values are parsed to numbers,
+  and inputs are restricted to local files (`-protocol_whitelist file`).
+- No auto-update and no telemetry; the only network access is the one-time FFmpeg download.
+- The exe is unsigned, so Windows SmartScreen will warn. Code signing is the way to remove that.
+- FFmpeg and Windows' media codecs parse the videos you open, so only convert files you trust, and re-run Setup
+  occasionally refresh FFmpeg: it is not auto-updated, so delete `%LOCALAPPDATA%\TikTokConverter\ffmpeg` and reopen
+  the app to fetch the latest build.
 
 ## FFmpeg
 

@@ -39,8 +39,15 @@ $inv = [Globalization.CultureInfo]::InvariantCulture
 $appHome = if ($env:TTC_HOME) { $env:TTC_HOME } else { $PSScriptRoot }
 
 # ---------- helpers ----------
+# Inputs are only ever plain local files: stops a crafted "video" (e.g. an HLS/concat playlist disguised as .avi)
+# from making FFmpeg read other local files or reach the network.
+$safeIn = '-protocol_whitelist file'
+
 function Find-Tool([string]$name) {
-    $cmd = Get-Command $name -ErrorAction SilentlyContinue
+    # our own installed copy wins over whatever happens to be earlier on PATH
+    $own = Join-Path (Join-Path $appHome 'ffmpeg\bin') "$name.exe"
+    if (Test-Path -LiteralPath $own) { return $own }
+    $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     $roots = @(
         (Join-Path $appHome 'ffmpeg\bin'),
@@ -78,7 +85,7 @@ function Get-Gpu-Encoder([string]$ffmpeg) {
 }
 
 function Probe([string]$ffprobe, [string]$file) {
-    $r = Run-Capture $ffprobe "-v error -select_streams v:0 -show_entries stream=codec_name,width,height,r_frame_rate:stream_side_data=rotation:stream_tags=rotate:format=duration -of default=nw=1 `"$file`""
+    $r = Run-Capture $ffprobe "$safeIn -v error -select_streams v:0 -show_entries stream=codec_name,width,height,r_frame_rate:stream_side_data=rotation:stream_tags=rotate:format=duration -of default=nw=1 `"$file`""
     $info = @{ Codec = ''; W = 0; H = 0; Dur = 0.0; Fps = 0.0; Rot = 0 }
     foreach ($line in $r.Out -split "`r?`n") {
         if ($line -match '^(?:TAG:)?rotat(?:e|ion)=(-?\d+)') { if ([int]$Matches[1] -ne 0) { $info.Rot = [int]$Matches[1] }; continue }
@@ -417,8 +424,9 @@ $btnBrowse.Add_Click({
         if ($dlg.ShowDialog() -eq 'OK') { $txtOut.Text = $dlg.SelectedPath }
     })
 $btnOpen.Add_Click({
-        if (-not (Test-Path $txtOut.Text)) { New-Item -ItemType Directory -Path $txtOut.Text -Force | Out-Null }
-        Start-Process explorer.exe $txtOut.Text
+        if (-not (Test-Path -LiteralPath $txtOut.Text)) { New-Item -ItemType Directory -Path $txtOut.Text -Force | Out-Null }
+        # only ever open a folder: handing explorer a file path would run that file
+        if (Test-Path -LiteralPath $txtOut.Text -PathType Container) { Start-Process explorer.exe "`"$($txtOut.Text)`"" }
     })
 $btnInstall.Add_Click({
         Start-Process powershell -ArgumentList '-NoExit', '-Command', 'winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements; Write-Host "Done. Close this window and restart TikTok Converter."'
@@ -511,7 +519,7 @@ function Get-Thumbs($info, [string]$path) {
         $t = if ($cellW -eq 0.0) { [Math]::Min($info.Dur * 0.02, 1.0) } else { (($x + $cellW / 2) / $tw) * $info.Dur }
         $f = Join-Path $tmpDir "th_$i.jpg"
         Remove-Item $f -Force -ErrorAction SilentlyContinue
-        $r = Run-Capture $script:ffmpeg "-y -hide_banner -loglevel error -ss $(Fmt $t) -i `"$path`" -frames:v 1 -vf scale=-2:$trackH `"$f`""
+        $r = Run-Capture $script:ffmpeg "-y -hide_banner -loglevel error -ss $(Fmt $t) $safeIn -i `"$path`" -frames:v 1 -vf scale=-2:$trackH `"$f`""
         if ($r.Code -ne 0 -or -not (Test-Path $f)) { break }
         $bytes = [IO.File]::ReadAllBytes($f)
         $img = [System.Drawing.Image]::FromStream((New-Object IO.MemoryStream(, $bytes)))
@@ -534,7 +542,7 @@ function Use-Proxy {
     if (-not (Test-Path $px)) {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $script:ffmpeg
-        $psi.Arguments = "-y -hide_banner -loglevel error -i `"$path`" -vf scale=-2:360,format=yuv420p -c:v libx264 -preset ultrafast -crf 30 -c:a aac -b:a 96k -movflags +faststart `"$px`""
+        $psi.Arguments = "-y -hide_banner -loglevel error $safeIn -i `"$path`" -vf scale=-2:360,format=yuv420p -c:v libx264 -preset ultrafast -crf 30 -c:a aac -b:a 96k -movflags +faststart `"$px`""
         $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardError = $true
         $p = [System.Diagnostics.Process]::Start($psi)
         $null = $p.StandardError.ReadToEndAsync()
@@ -740,7 +748,7 @@ function Get-FilterGraph([int]$modeIdx, [double]$fpsCap) {
     return "$core$fpsPart,format=yuv420p[v]"
 }
 
-$progressFile = Join-Path $env:TEMP 'tiktokconv_progress.txt'
+$progressFile = Join-Path $env:TEMP "tiktokconv_progress_$PID.txt"
 
 function Build-Args($info, $inFile, $outFile, $trimStart, $trimDur) {
     $q = if ($cmbQ.SelectedIndex -eq 0) { 14 } else { 18 }
@@ -752,7 +760,7 @@ function Build-Args($info, $inFile, $outFile, $trimStart, $trimDur) {
     $trimArgs = ''
     if ($null -ne $trimStart -and $trimStart -gt 0) { $trimArgs += "-ss $(Fmt $trimStart) " }
     if ($null -ne $trimDur) { $trimArgs += "-t $(Fmt $trimDur) " }
-    $pre = "-y -hide_banner -loglevel error -nostats -progress `"$progressFile`" $trimArgs-i `"$inFile`""
+    $pre = "-y -hide_banner -loglevel error -nostats -progress `"$progressFile`" $trimArgs$safeIn -i `"$inFile`""
 
     # already vertical 1080x1920 H.264, untrimmed, no fps cap needed: just remux (lossless and instant)
     if ($trimArgs -eq '' -and $useCap -eq 0.0 -and $info.Codec -eq 'h264' -and $info.W -eq 1080 -and $info.H -eq 1920) {
@@ -784,11 +792,11 @@ $btnPreview.Add_Click({
         $to = if ($null -ne $e) { $e } else { $info.Dur }
         $t = if ($to -gt $from) { $from + ($to - $from) / 2 } else { $from }
 
-        $png = Join-Path $env:TEMP 'tiktokconv_preview.png'
+        $png = Join-Path $env:TEMP "tiktokconv_preview_$PID.png"
         if (Test-Path $png) { Remove-Item $png -Force -ErrorAction SilentlyContinue }
         $status.Text = 'Rendering preview...'; $form.Refresh()
         $vf = Get-FilterGraph $cmbMode.SelectedIndex 0.0
-        $r = Run-Capture $script:ffmpeg "-y -hide_banner -loglevel error -ss $(Fmt $t) -i `"$($item.Path)`" -filter_complex `"$vf`" -map `"[v]`" -frames:v 1 `"$png`""
+        $r = Run-Capture $script:ffmpeg "-y -hide_banner -loglevel error -ss $(Fmt $t) $safeIn -i `"$($item.Path)`" -filter_complex `"$vf`" -map `"[v]`" -frames:v 1 `"$png`""
         $status.Text = 'Ready.'
         if ($r.Code -ne 0 -or -not (Test-Path $png)) {
             [void][Windows.Forms.MessageBox]::Show("Could not render preview.`n`n$($r.Err)", 'FFmpeg error'); return
@@ -859,7 +867,7 @@ function Finish {
         if ($chkSound.Checked) { [System.Media.SystemSounds]::Asterisk.Play() }
         if ($chkOpen.Checked) {
             if ($script:lastOut -and (Test-Path -LiteralPath $script:lastOut)) { Start-Process explorer.exe "/select,`"$($script:lastOut)`"" }
-            else { Start-Process explorer.exe $txtOut.Text }
+            elseif (Test-Path -LiteralPath $txtOut.Text -PathType Container) { Start-Process explorer.exe "`"$($txtOut.Text)`"" }
         }
     }
 }

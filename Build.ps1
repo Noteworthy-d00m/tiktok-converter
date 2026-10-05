@@ -1,5 +1,6 @@
 # Generates app.ico and compiles TikTokConverter.exe (no downloads needed: uses the .NET Framework compiler built into Windows).
-param([switch]$CopyToDesktop)
+# -Test builds TikTokConverter-test.exe WITH the TTC_* test hooks (never ship that one); the default build ignores them.
+param([switch]$CopyToDesktop, [switch]$Test)
 Add-Type -AssemblyName System.Drawing
 Set-Location $PSScriptRoot
 
@@ -46,12 +47,16 @@ $bw.Close(); $fs.Close(); $bmp.Dispose()
 
 # --- compile ---
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-& $csc -nologo -target:winexe -out:TikTokConverter.exe -win32icon:app.ico `
+$outName = if ($Test) { 'TikTokConverter-test.exe' } else { 'TikTokConverter.exe' }
+$define = if ($Test) { '-define:TESTHOOKS' } else { '-define:RELEASE' }
+& $csc -nologo -target:winexe "-out:$outName" $define -win32icon:app.ico `
     -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.IO.Compression.dll -r:System.IO.Compression.FileSystem.dll `
     -resource:TikTokConverter.ps1,TikTokConverter.ps1 `
     -resource:app.ico,app.ico `
     Launcher.cs
 if ($LASTEXITCODE -ne 0) { throw 'Compile failed' }
+
+if ($Test) { Write-Host "Built $outName (test hooks ON, do not distribute)"; return }
 
 # the file to send to friends: first run installs it (copy, FFmpeg, Desktop + Start menu shortcuts)
 New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot 'dist') -Force | Out-Null
