@@ -1,0 +1,13 @@
+# build output - attach dist/TikTokConverter-Setup.exe to a GitHub Release instead of committing it
+dist/
+*.exe
+app.ico
+
+# FFmpeg if you drop a local copy next to the app for testing
+ffmpeg/
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.vs/
+.vscode/
