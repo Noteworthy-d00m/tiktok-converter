@@ -13,6 +13,7 @@ using Microsoft.Win32;
 static class Launcher
 {
     const string AppName = "TikTok Converter";
+    const string Version = "1.1";   // single source of truth: Build.ps1 reads it for the file name
     const string RegKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\TikTokConverter";
     // { zip url, checksum url, file name to look for in the checksum file (null = file holds just the hash) }
     static readonly string[][] FfmpegSources = {
@@ -102,6 +103,7 @@ static class Launcher
         psi.UseShellExecute = false;
         psi.CreateNoWindow = true;
         psi.EnvironmentVariables["TTC_HOME"] = Path.GetDirectoryName(SelfPath);
+        psi.EnvironmentVariables["TTC_VERSION"] = Version;
         Process.Start(psi);
     }
 
@@ -325,7 +327,7 @@ static class Launcher
             using (RegistryKey k = Registry.CurrentUser.CreateSubKey(RegKey))
             {
                 k.SetValue("DisplayName", AppName);
-                k.SetValue("DisplayVersion", "1.0");
+                k.SetValue("DisplayVersion", Version);
                 k.SetValue("Publisher", "TikTok Converter");
                 k.SetValue("DisplayIcon", InstalledExe);
                 k.SetValue("InstallLocation", InstallDir);

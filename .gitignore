@@ -1,6 +1,6 @@
 # build output: only the ready-to-send installer is tracked (dist/TikTokConverter-Setup.exe)
 *.exe
-!dist/TikTokConverter-Setup.exe
+!dist/TikTokConverter-Setup-v*.exe
 app.ico
 
 # FFmpeg / speech engine + models if you drop local copies next to the app for testing

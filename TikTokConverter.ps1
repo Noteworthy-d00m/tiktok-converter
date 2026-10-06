@@ -146,7 +146,7 @@ $cDark = RGB 12 12 18
 
 # ---------- UI ----------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'TikTok Converter'
+$form.Text = $(if ($env:TTC_VERSION) { "TikTok Converter $env:TTC_VERSION" } else { 'TikTok Converter (dev)' })
 $form.ClientSize = New-Object System.Drawing.Size(1124, 690)
 $form.StartPosition = 'CenterScreen'
 $form.AllowDrop = $true

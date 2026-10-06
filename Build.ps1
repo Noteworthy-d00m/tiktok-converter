@@ -58,11 +58,16 @@ if ($LASTEXITCODE -ne 0) { throw 'Compile failed' }
 
 if ($Test) { Write-Host "Built $outName (test hooks ON, do not distribute)"; return }
 
-# the file to send to friends: first run installs it (copy, FFmpeg, Desktop + Start menu shortcuts)
+# the file to send to friends: first run installs it (copy, FFmpeg, Desktop + Start menu shortcuts).
+# Named by version (read from Launcher.cs) so older releases in dist\ are never overwritten.
+$version = [regex]::Match((Get-Content (Join-Path $PSScriptRoot 'Launcher.cs') -Raw), 'const string Version = "([^"]+)"').Groups[1].Value
+if (-not $version) { throw 'Could not read Version from Launcher.cs' }
 New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot 'dist') -Force | Out-Null
-Copy-Item TikTokConverter.exe (Join-Path $PSScriptRoot 'dist\TikTokConverter-Setup.exe') -Force
+$dest = Join-Path $PSScriptRoot "dist\TikTokConverter-Setup-v$version.exe"
+Copy-Item TikTokConverter.exe $dest -Force
+Write-Host "Release file: $dest"
 
 if ($CopyToDesktop) {
-    Copy-Item TikTokConverter.exe ([Environment]::GetFolderPath('Desktop')) -Force
+    Copy-Item $dest ([Environment]::GetFolderPath('Desktop')) -Force
 }
 Write-Host 'Built TikTokConverter.exe'

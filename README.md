@@ -20,8 +20,9 @@ visually lossless quality, and lets you trim clips on a CapCut-style timeline fi
 
 ## Install (for users)
 
-Download [`TikTokConverter-Setup.exe`](https://github.com/Noteworthy-d00m/tiktok-converter/raw/main/dist/TikTokConverter-Setup.exe)
-(also in the `dist` folder) and run it. On first run it:
+Download the latest, [`TikTokConverter-Setup-v1.1.exe`](https://github.com/Noteworthy-d00m/tiktok-converter/raw/main/dist/TikTokConverter-Setup-v1.1.exe)
+(all versions are in the `dist` folder), and run it. Running a newer Setup over an older install updates it in place.
+On first run it:
 
 1. copies the app to `%LOCALAPPDATA%\TikTokConverter`
 2. downloads FFmpeg (about 110 MB) if you don't already have it
@@ -29,6 +30,13 @@ Download [`TikTokConverter-Setup.exe`](https://github.com/Noteworthy-d00m/tiktok
 
 Windows may show "Windows protected your PC" because the file isn't code-signed: click **More info**, then
 **Run anyway**. Requires Windows 10/11 and internet on first run. No admin rights needed.
+
+## Versions
+
+| Version | File | What's in it |
+| --- | --- | --- |
+| **1.1** | [`TikTokConverter-Setup-v1.1.exe`](dist/TikTokConverter-Setup-v1.1.exe) | Auto captions (highlighted words, pill bubble, review window) |
+| 1.0 | [`TikTokConverter-Setup-v1.0.exe`](dist/TikTokConverter-Setup-v1.0.exe) | Batch conversion, trim timeline with player, blur/crop/bars, installer. Also git tag `v1.0` |
 
 ## How it's built
 
