@@ -318,6 +318,18 @@ $lblHint2.ForeColor = $cMuted
 
 $form.Controls.AddRange(@($mediaHost, $placeholder, $btnPlay, $lblClock, $btnSetStart, $btnSetEnd, $timeline, $lblInfo, $lblHint2))
 
+# auto captions (right column, under the timeline)
+$chkCaps = New-Object System.Windows.Forms.CheckBox
+$chkCaps.Text = 'Add auto captions'; $chkCaps.Location = '650,566'; $chkCaps.Size = '186,26'
+$chkCaps.ForeColor = $cCyan; $chkCaps.BackColor = [System.Drawing.Color]::Transparent
+$chkCaps.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9.5)
+$cmbCapStyle = New-Combo @('Yellow highlight', 'Green highlight', 'Pill bubble (yellow)') 840 565 272
+$cmbCapLang = New-Combo @('English (best accuracy)', 'Other languages (auto-detect)') 650 600 236
+$chkCapReview = New-Object System.Windows.Forms.CheckBox
+$chkCapReview.Text = 'Review text first'; $chkCapReview.Location = '896,602'; $chkCapReview.Size = '216,24'; $chkCapReview.Checked = $true
+$chkCapReview.ForeColor = $cText; $chkCapReview.BackColor = [System.Drawing.Color]::Transparent
+$form.Controls.AddRange(@($chkCaps, $cmbCapStyle, $cmbCapLang, $chkCapReview))
+
 # The timeline replaces the typed Start/End row. The text boxes stay as hidden storage; only Reset trim is kept, next to the timeline.
 foreach ($c in @($lblTrim, $lblStart, $txtStart, $lblEnd, $txtEnd, $lblHint)) { $c.Visible = $false }
 $btnClearTrim.Text = 'Reset trim'; $btnClearTrim.Location = '1000,502'; $btnClearTrim.Size = '112,30'
@@ -337,6 +349,12 @@ function Load-Settings {
             $v = $s.($pair[1])
             if ($null -ne $v -and [int]$v -ge 0 -and [int]$v -lt $pair[0].Items.Count) { $pair[0].SelectedIndex = [int]$v }
         }
+        foreach ($pair in @(@($cmbCapStyle, 'CapStyle'), @($cmbCapLang, 'CapLang'))) {
+            $v = $s.($pair[1])
+            if ($null -ne $v -and [int]$v -ge 0 -and [int]$v -lt $pair[0].Items.Count) { $pair[0].SelectedIndex = [int]$v }
+        }
+        if ($null -ne $s.Captions) { $chkCaps.Checked = [bool]$s.Captions }
+        if ($null -ne $s.CapReview) { $chkCapReview.Checked = [bool]$s.CapReview }
         if ($s.Out) { $txtOut.Text = [string]$s.Out }
         if ($null -ne $s.OpenWhenDone) { $chkOpen.Checked = [bool]$s.OpenWhenDone }
         if ($null -ne $s.Sound) { $chkSound.Checked = [bool]$s.Sound }
@@ -348,6 +366,7 @@ function Save-Settings {
         New-Item -ItemType Directory -Path (Split-Path $settingsFile) -Force | Out-Null
         @{ Mode = $cmbMode.SelectedIndex; Quality = $cmbQ.SelectedIndex; Fps = $cmbFps.SelectedIndex
             Enc = $cmbEnc.SelectedIndex; Out = $txtOut.Text; OpenWhenDone = $chkOpen.Checked; Sound = $chkSound.Checked
+            Captions = $chkCaps.Checked; CapStyle = $cmbCapStyle.SelectedIndex; CapLang = $cmbCapLang.SelectedIndex; CapReview = $chkCapReview.Checked
         } | ConvertTo-Json | Set-Content -Path $settingsFile -Encoding UTF8
     }
     catch {}
@@ -737,25 +756,376 @@ $timeline.Add_MouseUp({
         Refresh-List
     })
 
+# ---------- auto captions: whisper.cpp (speech to words) -> ASS subtitles -> burned in by FFmpeg ----------
+$capRoot = Join-Path $appHome 'captions'
+$whisperDir = Join-Path $capRoot 'whisper'
+$modelDir = Join-Path $capRoot 'models'
+# Pinned versions + SHA-256: nothing else is ever run or loaded from the network.
+$WhisperZip = @{ Url = 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip'
+    Sha = '49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a'; MB = 8 }
+$CapModels = @(
+    @{ Name = 'ggml-base.en.bin'; Url = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin'
+        Sha = 'a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002'; MB = 141; Lang = 'en' },
+    @{ Name = 'ggml-base.bin'; Url = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin'
+        Sha = '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe'; MB = 141; Lang = 'auto' }
+)
+$script:capProc = $null
+$script:capSeq = 0
+$capFont = 'Arial Black'
+$capFs = 84               # ASS font size (output is 1080x1920 so this is in real pixels)
+$capEmFactor = 1.421      # measured: libass renders Arial Black at fontsize/1.421 px per em
+$capY = 1320              # caption centre line: ~69% down, above TikTok's bottom buttons/description
+$capMaxW = 900            # a caption line never gets wider than this (screen is 1080)
+
+function Get-WhisperExe {
+    $x = Get-ChildItem -LiteralPath $whisperDir -Filter 'whisper-cli.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($x) { return $x.FullName }
+    return $null
+}
+
+function Download-Verified([string]$url, [string]$dest, [string]$sha, [string]$label) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $req = [Net.HttpWebRequest]::Create($url)
+    $req.UserAgent = 'TikTokConverter/1.0'; $req.Timeout = 30000; $req.ReadWriteTimeout = 30000
+    $tmp = "$dest.part"
+    $resp = $req.GetResponse()
+    try {
+        if ($resp.ResponseUri.Scheme -ne 'https') { throw 'download was redirected to a non-HTTPS address' }
+        $total = $resp.ContentLength; $got = 0L
+        $buf = New-Object byte[] 81920
+        $in = $resp.GetResponseStream(); $out = [IO.File]::Create($tmp)
+        try {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                if ($script:cancel) { throw 'cancelled' }
+                $out.Write($buf, 0, $n); $got += $n
+                if ($sw.ElapsedMilliseconds -gt 150) {
+                    $status.Text = "$label  $([int]($got / 1MB)) / $([int]($total / 1MB)) MB"
+                    if ($total -gt 0) { Set-Bar ([int](1000 * $got / $total)) }
+                    [Windows.Forms.Application]::DoEvents(); $sw.Restart()
+                }
+            }
+        }
+        finally { $out.Close(); $in.Close() }
+    }
+    finally { $resp.Close() }
+    $hash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLower()
+    if ($hash -ne $sha) { Remove-Item -LiteralPath $tmp -Force; throw "checksum mismatch for $label (file is corrupted or has been tampered with)" }
+    Move-Item -LiteralPath $tmp -Destination $dest -Force
+}
+
+# One-time setup. Returns $true when whisper + the chosen model are ready.
+function Ensure-CaptionTools([int]$mi) {
+    $model = $CapModels[$mi]
+    $modelPath = Join-Path $modelDir $model.Name
+    $needExe = -not (Get-WhisperExe)
+    $needModel = -not (Test-Path -LiteralPath $modelPath)
+    if (-not $needExe -and -not $needModel) { return $true }
+
+    $mb = $(if ($needExe) { $WhisperZip.MB } else { 0 }) + $(if ($needModel) { $model.MB } else { 0 })
+    $ans = [Windows.Forms.MessageBox]::Show("Auto captions need a one-time download of about $mb MB (a speech-recognition engine and its language model).`n`nIt runs entirely on your PC: your videos are never uploaded.`n`nDownload now?", 'Auto captions', 'YesNo', 'Question')
+    if ($ans -ne 'Yes') { return $false }
+    try {
+        New-Item -ItemType Directory -Path $whisperDir, $modelDir -Force | Out-Null
+        if ($needExe) {
+            $zip = Join-Path $capRoot 'whisper.zip'
+            Download-Verified $WhisperZip.Url $zip $WhisperZip.Sha 'Downloading speech engine...'
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $root = [IO.Path]::GetFullPath($whisperDir).TrimEnd('\') + '\'
+            $z = [IO.Compression.ZipFile]::OpenRead($zip)
+            try {
+                foreach ($entry in $z.Entries) {
+                    if ($entry.FullName.EndsWith('/') -or $entry.FullName.EndsWith('\')) { continue }
+                    $d = [IO.Path]::GetFullPath((Join-Path $whisperDir $entry.FullName))
+                    if (-not $d.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { continue }   # never write outside our folder
+                    New-Item -ItemType Directory -Path (Split-Path $d) -Force | Out-Null
+                    [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $d, $true)
+                }
+            }
+            finally { $z.Dispose() }
+            Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+        }
+        if ($needModel) { Download-Verified $model.Url $modelPath $model.Sha 'Downloading language model...' }
+    }
+    catch {
+        Set-Bar 0; $status.Text = 'Ready.'
+        if (-not $script:cancel) { [void][Windows.Forms.MessageBox]::Show("Could not set up captions:`n$($_.Exception.Message)", 'Auto captions') }
+        return $false
+    }
+    Set-Bar 0; $status.Text = 'Ready.'
+    if (-not (Get-WhisperExe)) {
+        [void][Windows.Forms.MessageBox]::Show('The speech engine was downloaded but whisper-cli.exe was not found inside it.', 'Auto captions'); return $false
+    }
+    return $true
+}
+
+function Extract-Audio([string]$inFile, $start, $dur, [string]$wav) {
+    $a = '-y -hide_banner -loglevel error '
+    if ($null -ne $start -and $start -gt 0) { $a += "-ss $(Fmt $start) " }
+    if ($null -ne $dur) { $a += "-t $(Fmt $dur) " }
+    $a += "$safeIn -i `"$inFile`" -vn -map 0:a:0 -ac 1 -ar 16000 -c:a pcm_s16le `"$wav`""
+    $r = Run-Capture $script:ffmpeg $a
+    return ($r.Code -eq 0 -and (Test-Path -LiteralPath $wav) -and (Get-Item -LiteralPath $wav).Length -gt 4000)
+}
+
+function Run-Whisper([string]$exe, [string]$model, [string]$wav, [string]$lang, [string]$prefix) {
+    $threads = [Math]::Max(2, [Math]::Min(8, [Environment]::ProcessorCount - 1))
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = "-m `"$model`" -f `"$wav`" -l $lang -ml 1 -sow -oj -of `"$prefix`" -np -t $threads"
+    $psi.WorkingDirectory = Split-Path $exe
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $script:capProc = $p
+    try { $p.PriorityClass = 'BelowNormal' } catch {}
+    $null = $p.StandardOutput.ReadToEndAsync()
+    $err = $p.StandardError.ReadToEndAsync()
+    $tick = 0
+    while (-not $p.HasExited) {
+        [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 60
+        $tick++; Set-Bar (($tick * 12) % 1000)
+        if ($script:cancel) { try { $p.Kill() } catch {}; break }
+    }
+    $p.WaitForExit()
+    $script:capProc = $null
+    Set-Bar 0
+    return @{ Code = $p.ExitCode; Err = $err.Result }
+}
+
+# whisper.cpp "-ml 1 -sow" JSON -> list of @{S;E;T} (seconds, one entry per spoken word)
+function Parse-Words([string]$jsonPath) {
+    $j = Get-Content -LiteralPath $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $words = New-Object System.Collections.ArrayList
+    $note = [string][char]0x266A
+    foreach ($seg in $j.transcription) {
+        $raw = [string]$seg.text
+        $t = $raw.Trim()
+        if ($t -eq '') { continue }
+        if ($t -match '^\[.*\]$' -or $t -match '^\(.*\)$' -or $t -match '^\*.*\*$' -or $t.Contains($note)) { continue }   # [BLANK_AUDIO], (music) ...
+        $s = [double]$seg.offsets.from / 1000.0; $e = [double]$seg.offsets.to / 1000.0
+        if ($words.Count -gt 0 -and ($t -match '^[\p{P}\p{S}]+$' -or -not $raw.StartsWith(' '))) {
+            $prev = $words[$words.Count - 1]; $prev.T += $t; $prev.E = [Math]::Max($prev.E, $e); continue    # punctuation / split word: glue on
+        }
+        if ($t -match '^[\p{P}\p{S}]+$') { continue }
+        [void]$words.Add(@{ S = $s; E = $e; T = $t })
+    }
+    for ($i = 0; $i -lt $words.Count; $i++) {
+        if ($i -gt 0 -and $words[$i].S -lt $words[$i - 1].S) { $words[$i].S = $words[$i - 1].S }
+        if ($words[$i].E -lt $words[$i].S + 0.08) { $words[$i].E = $words[$i].S + 0.08 }
+    }
+    return , $words
+}
+
+# measuring text the same way FFmpeg's renderer will draw it (needed for the pill behind the spoken word)
+$script:mBmp = New-Object System.Drawing.Bitmap 8, 8
+$script:mG = [System.Drawing.Graphics]::FromImage($script:mBmp)
+$script:mFont = New-Object System.Drawing.Font($capFont, [single]($capFs / $capEmFactor), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+$script:mSf = [System.Drawing.StringFormat]::GenericTypographic
+$script:mSf.FormatFlags = $script:mSf.FormatFlags -bor [System.Drawing.StringFormatFlags]::MeasureTrailingSpaces
+function Measure-Text([string]$s) { return [double]$script:mG.MeasureString($s, $script:mFont, 99999, $script:mSf).Width }
+
+function Clean-Word([string]$t) { return (($t -replace '[{}\\]', '') -replace '[\x00-\x1F\x7F]', ' ').Trim().ToUpperInvariant() }   # no ASS tags / line breaks can come from a transcript
+
+# group words into short on-screen captions (max 3 words, one line, break on pauses and sentence ends)
+function Build-Pages($words) {
+    $pages = New-Object System.Collections.ArrayList
+    $cur = @()
+    foreach ($w in $words) {
+        $t = Clean-Word $w.T
+        if ($t -eq '') { continue }
+        $w = @{ S = $w.S; E = $w.E; T = $t }
+        if ($cur.Count -gt 0) {
+            $joined = (($cur | ForEach-Object { $_.T }) -join ' ') + ' ' + $t
+            if ($cur.Count -ge 3 -or (Measure-Text $joined) -gt $capMaxW -or ($w.S - $cur[$cur.Count - 1].E) -gt 0.7) {
+                [void]$pages.Add($cur); $cur = @()
+            }
+        }
+        $cur += $w
+        # sentence end always closes a caption; a comma/pause mark only once there are 2+ words (no lonely one-word captions)
+        if ($t -match '[\.\!\?]$' -or ($t -match '[,;:]$' -and $cur.Count -ge 2)) { [void]$pages.Add($cur); $cur = @() }
+    }
+    if ($cur.Count -gt 0) { [void]$pages.Add($cur) }
+    return , $pages
+}
+
+function Fmt-Ass([double]$t) {
+    $cs = [int][Math]::Round([Math]::Max(0.0, $t) * 100)
+    $h = [int][Math]::Floor($cs / 360000); $cs -= $h * 360000
+    $m = [int][Math]::Floor($cs / 6000); $cs -= $m * 6000
+    $s = [int][Math]::Floor($cs / 100); $c = $cs - $s * 100
+    return ('{0}:{1:00}:{2:00}.{3:00}' -f $h, $m, $s, $c)
+}
+
+# rounded rectangle as an ASS vector drawing (the "pill")
+function Pill-Shape([double]$w, [double]$h) {
+    $r = $h / 2; $k = 0.5523 * $r
+    $v = @(
+        "m $(Fmt $r) 0", "l $(Fmt ($w - $r)) 0",
+        "b $(Fmt ($w - $r + $k)) 0 $(Fmt $w) $(Fmt ($r - $k)) $(Fmt $w) $(Fmt $r)",
+        "l $(Fmt $w) $(Fmt ($h - $r))",
+        "b $(Fmt $w) $(Fmt ($h - $r + $k)) $(Fmt ($w - $r + $k)) $(Fmt $h) $(Fmt ($w - $r)) $(Fmt $h)",
+        "l $(Fmt $r) $(Fmt $h)",
+        "b $(Fmt ($r - $k)) $(Fmt $h) 0 $(Fmt ($h - $r + $k)) 0 $(Fmt ($h - $r))",
+        "l 0 $(Fmt $r)",
+        "b 0 $(Fmt ($r - $k)) $(Fmt ($r - $k)) 0 $(Fmt $r) 0")
+    return ($v -join ' ')
+}
+
+# styleIdx: 0 yellow highlight, 1 green highlight, 2 pill bubble behind the spoken word
+function Write-Ass($pages, [int]$styleIdx, [string]$path) {
+    $hl = switch ($styleIdx) { 0 { '&H00FFFF&' } 1 { '&H14FF39&' } default { '&H000000&' } }
+    $white = '&HFFFFFF&'
+    $lines = New-Object System.Collections.ArrayList
+    [void]$lines.Add(@"
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Cap,$capFont,$capFs,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,8,3,2,60,60,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"@)
+    $padX = 24; $pillH = $capFs * 1.0
+    for ($pi = 0; $pi -lt $pages.Count; $pi++) {
+        $page = $pages[$pi]; $n = $page.Count
+        $nextStart = if ($pi + 1 -lt $pages.Count) { $pages[$pi + 1][0].S } else { 1e9 }
+        for ($k = 0; $k -lt $n; $k++) {
+            $st = $page[$k].S
+            $en = if ($k -lt $n - 1) { $page[$k + 1].S } else { $page[$k].E + 0.25 }
+            if ($en -gt $nextStart) { $en = $nextStart }
+            if ($en -le $st + 0.04) { $en = $st + 0.06 }
+            # pill style: the spoken word is black on a yellow pill, and its outline takes the pill colour so it stays crisp
+            $on = if ($styleIdx -eq 2) { "\c$hl\3c&H00E6FF&\shad0" } else { "\c$hl" }
+            $off = if ($styleIdx -eq 2) { "\c$white\3c&H000000&\shad3" } else { "\c$white" }
+            $parts = for ($j = 0; $j -lt $n; $j++) { if ($j -eq $k) { "{$on}$($page[$j].T){$off}" } else { $page[$j].T } }
+            # quick pop-in with a small bounce on the first word of each caption
+            $pop = if ($k -eq 0) { '{\fscx72\fscy72\t(0,80,\fscx108\fscy108)\t(80,150,\fscx100\fscy100)}' } else { '' }
+            if ($styleIdx -eq 2) {
+                $full = ($page | ForEach-Object { $_.T }) -join ' '
+                $x0 = 540 - (Measure-Text $full) / 2
+                $prefix = if ($k -gt 0) { (($page[0..($k - 1)] | ForEach-Object { $_.T }) -join ' ') + ' ' } else { '' }
+                $left = $x0 + (Measure-Text $prefix) - $padX
+                $pw = (Measure-Text $page[$k].T) + 2 * $padX
+                $top = $capY + 2 - $pillH / 2
+                [void]$lines.Add("Dialogue: 0,$(Fmt-Ass $st),$(Fmt-Ass $en),Cap,,0,0,0,,{\an7\pos($(Fmt $left),$(Fmt $top))\bord0\shad0\1c&H00E6FF&\p1}$(Pill-Shape $pw $pillH){\p0}")
+            }
+            [void]$lines.Add("Dialogue: 1,$(Fmt-Ass $st),$(Fmt-Ass $en),Cap,,0,0,0,,{\an5\pos(540,$capY)}$pop$($parts -join ' ')")
+        }
+    }
+    Set-Content -LiteralPath $path -Value ($lines -join "`r`n") -Encoding UTF8
+}
+
+# lets the user fix wrong words / delete junk before they are burned in; $null = skip captions for this video
+function Show-CaptionEditor($words, [string]$name) {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = 'Review captions - ' + $name
+    $dlg.ClientSize = New-Object System.Drawing.Size(520, 560)
+    $dlg.StartPosition = 'CenterParent'; $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false
+    $dlg.BackColor = $cBg; $dlg.ForeColor = $cText; $dlg.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+    $hint = New-Label 'Double-click a word to fix it. Select rows and press Delete to remove them. Timing stays as spoken.' 12 8 496
+    $hint.Height = 40; $hint.ForeColor = $cMuted
+    $grid = New-Object System.Windows.Forms.DataGridView
+    $grid.Location = '12,52'; $grid.Size = '496,440'
+    $grid.AllowUserToAddRows = $false; $grid.AllowUserToDeleteRows = $true; $grid.RowHeadersVisible = $false
+    $grid.SelectionMode = 'FullRowSelect'; $grid.EnableHeadersVisualStyles = $false
+    $grid.BackgroundColor = $cPanel; $grid.BorderStyle = 'None'; $grid.GridColor = $cBtn
+    $grid.ColumnHeadersDefaultCellStyle.BackColor = $cHeader; $grid.ColumnHeadersDefaultCellStyle.ForeColor = $cText
+    $grid.DefaultCellStyle.BackColor = $cPanel; $grid.DefaultCellStyle.ForeColor = $cText
+    $grid.DefaultCellStyle.SelectionBackColor = $cRed; $grid.DefaultCellStyle.SelectionForeColor = [System.Drawing.Color]::White
+    $c1 = New-Object System.Windows.Forms.DataGridViewTextBoxColumn; $c1.HeaderText = 'Time'; $c1.ReadOnly = $true; $c1.Width = 90
+    $c2 = New-Object System.Windows.Forms.DataGridViewTextBoxColumn; $c2.HeaderText = 'Word'; $c2.AutoSizeMode = 'Fill'
+    [void]$grid.Columns.Add($c1); [void]$grid.Columns.Add($c2)
+    foreach ($w in $words) { $ri = $grid.Rows.Add((Fmt-Clock $w.S), $w.T); $grid.Rows[$ri].Tag = $w }
+    $ok = New-Btn 'Burn in captions' 12 506 170 40 'primary'
+    $skip = New-Btn 'Skip captions' 190 506 130 40
+    $ok.DialogResult = 'OK'; $skip.DialogResult = 'Cancel'
+    $dlg.Controls.AddRange(@($hint, $grid, $ok, $skip)); $dlg.AcceptButton = $ok; $dlg.CancelButton = $skip
+    $res = $dlg.ShowDialog($form)
+    $out = $null
+    if ($res -eq 'OK') {
+        $out = New-Object System.Collections.ArrayList
+        foreach ($row in $grid.Rows) {
+            $t = ([string]$row.Cells[1].Value).Trim()
+            if ($t -ne '' -and $row.Tag) { [void]$out.Add(@{ S = $row.Tag.S; E = $row.Tag.E; T = $t }) }
+        }
+    }
+    $dlg.Dispose()
+    return , $out
+}
+
+# Full pipeline for one video. Returns the path of the .ass file, or '' when no captions should be burned in.
+function Make-Captions([string]$inFile, $start, $trimDur, $info) {
+    $mi = $cmbCapLang.SelectedIndex
+    $words = $null
+    $name = [IO.Path]::GetFileName($inFile)
+    if ($env:TTC_TEST_WORDS) {
+        $words = New-Object System.Collections.ArrayList
+        foreach ($w in (Get-Content -LiteralPath $env:TTC_TEST_WORDS -Raw | ConvertFrom-Json)) { [void]$words.Add(@{ S = [double]$w.s; E = [double]$w.e; T = [string]$w.t }) }
+    }
+    else {
+        if (-not (Ensure-CaptionTools $mi)) { return '' }
+        $model = Join-Path $modelDir $CapModels[$mi].Name
+        $wav = Join-Path $tmpDir "cap_$PID.wav"; $prefix = Join-Path $tmpDir "cap_$PID"
+        $status.Text = "Captions: reading audio of $name ..."
+        if (-not (Extract-Audio $inFile $start $trimDur $wav)) {
+            $status.Text = "No audio found in $name, so no captions were added."
+            [void][Windows.Forms.MessageBox]::Show("$name has no usable audio, so no captions were added.", 'Auto captions'); return ''
+        }
+        $status.Text = "Captions: listening to $name (runs on your PC, may take a little while) ..."
+        $r = Run-Whisper (Get-WhisperExe) $model $wav $CapModels[$mi].Lang $prefix
+        Remove-Item -LiteralPath $wav -Force -ErrorAction SilentlyContinue
+        if ($script:cancel) { return '' }
+        if ($r.Code -ne 0 -or -not (Test-Path -LiteralPath "$prefix.json")) {
+            [void][Windows.Forms.MessageBox]::Show("The speech engine failed on $name.`n`n$($r.Err)", 'Auto captions'); return ''
+        }
+        try { $words = Parse-Words "$prefix.json" }
+        catch { [void][Windows.Forms.MessageBox]::Show("Could not read the transcript for $name.`n`n$($_.Exception.Message)", 'Auto captions'); return '' }
+        finally { Remove-Item -LiteralPath "$prefix.json" -Force -ErrorAction SilentlyContinue }
+    }
+    if (-not $words -or $words.Count -eq 0) {
+        $status.Text = "No speech found in $name, so no captions were added."
+        [void][Windows.Forms.MessageBox]::Show("No speech was found in $name, so no captions were added.", 'Auto captions'); return ''
+    }
+    if ($chkCapReview.Checked -and -not $env:TTC_TEST_WORDS) {
+        $edited = Show-CaptionEditor $words $name
+        if ($null -eq $edited -or $edited.Count -eq 0) { return '' }
+        $words = $edited
+    }
+    $pages = Build-Pages $words
+    if ($pages.Count -eq 0) { return '' }
+    $script:capSeq++
+    $ass = Join-Path $tmpDir ("cap_{0}_{1}.ass" -f $PID, $script:capSeq)
+    Write-Ass $pages $cmbCapStyle.SelectedIndex $ass
+    return $ass
+}
+
 # ---------- filters / args ----------
-function Get-FilterGraph([int]$modeIdx, [double]$fpsCap) {
+function Get-FilterGraph([int]$modeIdx, [double]$fpsCap, [string]$assName = '') {
     $core = switch ($modeIdx) {
         0 { '[0:v]split=2[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=30:5[bg];[b]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1' }
         1 { '[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1' }
         2 { '[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1' }
     }
     $fpsPart = if ($fpsCap -gt 0) { ",fps=$(Fmt $fpsCap)" } else { '' }
-    return "$core$fpsPart,format=yuv420p[v]"
+    $assPart = if ($assName -ne '') { ",ass=$assName" } else { '' }     # captions go on after the layout, at 1080x1920
+    return "$core$fpsPart$assPart,format=yuv420p[v]"
 }
 
 $progressFile = Join-Path $env:TEMP "tiktokconv_progress_$PID.txt"
 
-function Build-Args($info, $inFile, $outFile, $trimStart, $trimDur) {
+function Build-Args($info, $inFile, $outFile, $trimStart, $trimDur, [string]$assName = '') {
     $q = if ($cmbQ.SelectedIndex -eq 0) { 14 } else { 18 }
     $capIdx = $cmbFps.SelectedIndex
     $cap = switch ($capIdx) { 1 { 30.0 } 2 { 60.0 } default { 0.0 } }
     $useCap = if ($cap -gt 0 -and $info.Fps -gt ($cap + 0.5)) { $cap } else { 0.0 }
-    $vf = Get-FilterGraph $cmbMode.SelectedIndex $useCap
+    $vf = Get-FilterGraph $cmbMode.SelectedIndex $useCap $assName
 
     $trimArgs = ''
     if ($null -ne $trimStart -and $trimStart -gt 0) { $trimArgs += "-ss $(Fmt $trimStart) " }
@@ -763,7 +1133,7 @@ function Build-Args($info, $inFile, $outFile, $trimStart, $trimDur) {
     $pre = "-y -hide_banner -loglevel error -nostats -progress `"$progressFile`" $trimArgs$safeIn -i `"$inFile`""
 
     # already vertical 1080x1920 H.264, untrimmed, no fps cap needed: just remux (lossless and instant)
-    if ($trimArgs -eq '' -and $useCap -eq 0.0 -and $info.Codec -eq 'h264' -and $info.W -eq 1080 -and $info.H -eq 1920) {
+    if ($assName -eq '' -and $trimArgs -eq '' -and $useCap -eq 0.0 -and $info.Codec -eq 'h264' -and $info.W -eq 1080 -and $info.H -eq 1920) {
         return "$pre -map 0:v:0 -map 0:a? -c copy -movflags +faststart `"$outFile`""
     }
 
@@ -836,6 +1206,13 @@ function Start-Next {
     $trimmed = ($null -ne $e -or $null -ne $s)
     $trimDur = if ($trimmed -and $dur -gt 0) { $dur } else { $null }
 
+    # auto captions (optional): transcribe the kept part of the video, build subtitles, burn them in below
+    $assFile = ''
+    if ($chkCaps.Checked) {
+        $assFile = Make-Captions $inFile $s $trimDur $info
+        if ($script:cancel) { Start-Next; return }
+    }
+
     $base = [IO.Path]::GetFileNameWithoutExtension($inFile) + '_tiktok'
     $outFile = Join-Path $txtOut.Text ($base + '.mp4')
     $n = 2
@@ -843,7 +1220,7 @@ function Start-Next {
         $outFile = Join-Path $txtOut.Text ("{0}_{1}.mp4" -f $base, $n)
         $n++
     }
-    $script:current = @{ In = $inFile; Out = $outFile; Dur = $dur }
+    $script:current = @{ In = $inFile; Out = $outFile; Dur = $dur; Ass = $assFile }
     $tag = if ($trimmed) { "  [trim $(Fmt $from)s - $(Fmt ($from + $dur))s]" } else { '' }
     $status.Text = "Converting: $([IO.Path]::GetFileName($inFile))$tag  ($($script:done + $script:failed + 1) of $($script:total))"
     Set-Bar 0
@@ -851,7 +1228,9 @@ function Start-Next {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $script:ffmpeg
-    $psi.Arguments = Build-Args $info $inFile $outFile $s $trimDur
+    $assName = if ($assFile -ne '') { Split-Path $assFile -Leaf } else { '' }
+    $psi.Arguments = Build-Args $info $inFile $outFile $s $trimDur $assName
+    if ($assName -ne '') { $psi.WorkingDirectory = Split-Path $assFile }   # the ass filter reads the file by plain name (no path escaping needed)
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
     $psi.RedirectStandardError = $true
     $script:proc = [System.Diagnostics.Process]::Start($psi)
@@ -890,6 +1269,7 @@ $timer.Add_Tick({
             return
         }
         $code = $script:proc.ExitCode
+        if ($script:current.Ass) { Remove-Item -LiteralPath $script:current.Ass -Force -ErrorAction SilentlyContinue }
         if ($code -eq 0) { $script:done++; $script:lastOut = $script:current.Out } else {
             $script:failed++
             [void][Windows.Forms.MessageBox]::Show("Failed: $($script:current.In)`n`n$($script:errTask.Result)", 'FFmpeg error')
@@ -912,6 +1292,14 @@ $btnGo.Add_Click({
         }
         New-Item -ItemType Directory -Path $txtOut.Text -Force | Out-Null
         Save-Settings
+        # captions: make sure the speech engine + model are there before starting (one-time download, asks first)
+        if ($chkCaps.Checked -and -not $env:TTC_TEST_WORDS) {
+            $script:cancel = $false
+            $btnGo.Enabled = $false; $btnStop.Enabled = $true      # the download pumps UI events: lock the button so it can't be re-entered
+            try { $ready = Ensure-CaptionTools $cmbCapLang.SelectedIndex }
+            finally { $btnGo.Enabled = $true; $btnStop.Enabled = $false }
+            if (-not $ready) { return }
+        }
         if ($cmbEnc.SelectedIndex -eq 0 -and -not $script:gpuChecked) {
             $status.Text = 'Detecting GPU encoder...'; $form.Refresh()
             $script:gpuEnc = Get-Gpu-Encoder $script:ffmpeg
@@ -927,18 +1315,48 @@ $btnGo.Add_Click({
 $btnStop.Add_Click({
         $script:cancel = $true
         if ($script:proc -and -not $script:proc.HasExited) { try { $script:proc.Kill() } catch {} }
+        if ($script:capProc -and -not $script:capProc.HasExited) { try { $script:capProc.Kill() } catch {} }
     })
 $form.Add_FormClosing({
         Save-Settings
         try { $playTimer.Stop(); $mediaEl.Stop(); $mediaEl.Source = $null } catch {}
+        if ($script:capProc -and -not $script:capProc.HasExited) { try { $script:capProc.Kill() } catch {} }
         if ($script:proc -and -not $script:proc.HasExited) { try { $script:proc.Kill() } catch {} }
     })
 
 # ---------- headless self-test (used only when TTC_TEST_FILE is set) ----------
+if ($env:TTC_TEST_PARSE) {      # parser test: whisper-style JSON -> words -> pages
+    $wd = Parse-Words $env:TTC_TEST_PARSE
+    "WORDS: " + (($wd | ForEach-Object { '{0}[{1:N2}-{2:N2}]' -f $_.T, $_.S, $_.E }) -join ' ')
+    $pg = Build-Pages $wd
+    "PAGES: " + (($pg | ForEach-Object { '(' + (($_ | ForEach-Object { $_.T }) -join ' ') + ')' }) -join ' ')
+    if ($env:TTC_TEST_EDITOR) {   # open the review window, edit a word, press the OK button, show what comes back
+        $closer = New-Object System.Windows.Forms.Timer; $closer.Interval = 1500
+        $closer.Add_Tick({
+                $closer.Stop()
+                foreach ($f in [System.Windows.Forms.Application]::OpenForms) {
+                    if ($f.Text -like 'Review captions*') {
+                        $g = $f.Controls | Where-Object { $_ -is [System.Windows.Forms.DataGridView] }
+                        $g.Rows[0].Cells[1].Value = 'FIXED'
+                        if ($g.Rows.Count -gt 2) { $g.Rows.RemoveAt(1) }
+                        $bmp = New-Object System.Drawing.Bitmap $f.ClientSize.Width, $f.ClientSize.Height
+                        $f.DrawToBitmap($bmp, (New-Object System.Drawing.Rectangle 0, 0, $f.ClientSize.Width, $f.ClientSize.Height))
+                        $bmp.Save($env:TTC_TEST_EDITOR); $bmp.Dispose()
+                        $f.DialogResult = 'OK'
+                    }
+                }
+            })
+        $closer.Start()
+        $ed = Show-CaptionEditor $wd 'sample.mp4'
+        "EDITED: " + (($ed | ForEach-Object { $_.T }) -join ' ')
+    }
+    return
+}
 if ($env:TTC_TEST_FILE) {
     $form.Show()
     $chkOpen.Checked = $false; $chkSound.Checked = $false
     $txtOut.Text = $env:TTC_TEST_OUT
+    if ($env:TTC_TEST_CAPS) { $chkCaps.Checked = $true; $cmbCapStyle.SelectedIndex = [int]$env:TTC_TEST_CAPSTYLE; $cmbMode.SelectedIndex = 0 }
     Add-Files @($env:TTC_TEST_FILE)                     # goes through the real add + auto-select path
     if ($env:TTC_TEST_START) { $txtStart.Text = $env:TTC_TEST_START }   # goes through the real TextChanged path
     if ($env:TTC_TEST_END) { $txtEnd.Text = $env:TTC_TEST_END }
@@ -966,9 +1384,8 @@ if ($env:TTC_TEST_FILE) {
     if ($env:TTC_SHOT) {
         $form.Activate(); & $pump 0.5
         $bmp = New-Object System.Drawing.Bitmap $form.Width, $form.Height
-        $gg = [System.Drawing.Graphics]::FromImage($bmp)
-        $gg.CopyFromScreen($form.Location.X, $form.Location.Y, 0, 0, $bmp.Size)
-        $gg.Dispose(); $bmp.Save($env:TTC_SHOT); $bmp.Dispose()
+        $form.DrawToBitmap($bmp, (New-Object System.Drawing.Rectangle 0, 0, $form.Width, $form.Height))   # layout only: the video surface itself is not captured
+        $bmp.Save($env:TTC_SHOT); $bmp.Dispose()
     }
     "LIST: " + (($list.Items | ForEach-Object { $_.ToString() }) -join ' | ')
     $btnGo.PerformClick()

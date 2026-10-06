@@ -3,8 +3,9 @@
 !dist/TikTokConverter-Setup.exe
 app.ico
 
-# FFmpeg if you drop a local copy next to the app for testing
+# FFmpeg / speech engine + models if you drop local copies next to the app for testing
 ffmpeg/
+captions/
 
 # OS / editor
 Thumbs.db

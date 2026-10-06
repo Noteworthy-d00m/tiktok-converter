@@ -11,6 +11,10 @@ visually lossless quality, and lets you trim clips on a CapCut-style timeline fi
 - Quality: visually lossless (CRF 14) or high (CRF 18, smaller files)
 - Frame-rate cap (30 / 60 fps), GPU encoding (NVENC / AMF / QuickSync) when available, CPU otherwise
 - Already-vertical 1080x1920 H.264 files are remuxed instantly with no re-encode
+- **Auto captions**: speech is turned into 2-3 word captions with the spoken word highlighted (yellow, green, or a
+  rounded "pill" bubble), a quick pop-in, big outlined type placed above TikTok's buttons. Optional review window to
+  fix wrong words before they are burned in. Runs fully offline on your PC (whisper.cpp); the speech engine and
+  model (~150 MB) are downloaded once, after you confirm, with pinned versions and SHA-256 checks.
 - Never overwrites: repeat conversions become `name_tiktok_2.mp4`, `_3`, ...
 - Remembers your settings, optional sound and "open folder" when done
 
@@ -59,7 +63,9 @@ also has a headless self-test mode that runs when `TTC_TEST_FILE` is set.
   available. Only `ffmpeg.exe` and `ffprobe.exe` are extracted, to a fixed folder.
 - FFmpeg is started with fixed argument lists (no shell), file paths are quoted, trim values are parsed to numbers,
   and inputs are restricted to local files (`-protocol_whitelist file`).
-- No auto-update and no telemetry; the only network access is the one-time FFmpeg download.
+- No auto-update and no telemetry; the only network access is the one-time FFmpeg download and, if you turn on
+  auto captions, the one-time speech engine + model download (pinned URLs, SHA-256 verified, zip entries can't escape
+  their folder). Your videos and audio are never uploaded: transcription runs locally.
 - The exe is unsigned, so Windows SmartScreen will warn. Code signing is the way to remove that.
 - FFmpeg and Windows' media codecs parse the videos you open, so only convert files you trust, and re-run Setup
   occasionally refresh FFmpeg: it is not auto-updated, so delete `%LOCALAPPDATA%\TikTokConverter\ffmpeg` and reopen
