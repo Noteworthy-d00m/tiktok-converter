@@ -16,7 +16,8 @@ visually lossless quality, and lets you trim clips on a CapCut-style timeline fi
 
 ## Install (for users)
 
-Download `TikTokConverter-Setup.exe` from the [Releases](../../releases) page and run it. On first run it:
+Download [`TikTokConverter-Setup.exe`](https://github.com/Noteworthy-d00m/tiktok-converter/raw/main/dist/TikTokConverter-Setup.exe)
+(also in the `dist` folder) and run it. On first run it:
 
 1. copies the app to `%LOCALAPPDATA%\TikTokConverter`
 2. downloads FFmpeg (about 110 MB) if you don't already have it

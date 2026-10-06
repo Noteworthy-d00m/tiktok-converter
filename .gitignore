@@ -1,6 +1,6 @@
-# build output - attach dist/TikTokConverter-Setup.exe to a GitHub Release instead of committing it
-dist/
+# build output: only the ready-to-send installer is tracked (dist/TikTokConverter-Setup.exe)
 *.exe
+!dist/TikTokConverter-Setup.exe
 app.ico
 
 # FFmpeg if you drop a local copy next to the app for testing
