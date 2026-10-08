@@ -302,21 +302,31 @@ $placeholder.ForeColor = $cMuted; $placeholder.TextAlign = 'MiddleCenter'
 $placeholder.Font = New-Object System.Drawing.Font('Segoe UI', 11)
 $placeholder.Text = "Add a video and click it in the list`r`nto preview and trim it here"
 
-$btnPlay = New-Btn 'Play' 650 370 90 34 'accent'
-$lblClock = New-Label '0:00.00 / 0:00.00' 746 370 146
-$lblClock.Font = New-Object System.Drawing.Font('Consolas', 9)
-$btnSetStart = New-Btn 'Set start [' 894 370 104 34
-$btnSetEnd = New-Btn 'Set end ]' 1004 370 108 34
+$btnPlay = New-Btn 'Play' 650 370 80 34 'accent'
+# playhead position: type a time and press Enter to jump there
+$txtPos = New-Text 738 374 84
+$lblClock = New-Label '' 824 372 90     # "/ total length"
+$lblClock.Font = New-Object System.Drawing.Font('Consolas', 9.5)
+$btnSetStart = New-Btn 'Set start [' 916 370 96 34
+$btnSetEnd = New-Btn 'Set end ]' 1016 370 96 34
+foreach ($tb in @($txtPos)) { $tb.Font = New-Object System.Drawing.Font('Consolas', 10) }
 
 $timeline = New-Object DbPanel
 $timeline.Location = '650,412'; $timeline.Size = '462,88'; $timeline.BackColor = $cBg
 
-$lblInfo = New-Label '' 650 506 462
-$lblInfo.ForeColor = $cCyan; $lblInfo.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 10)
+# trim range: drag the handles OR type exact times here (Enter or click away to apply)
+$lblEdS = New-Label 'Start' 650 506 38
+$txtEdStart = New-Text 690 507 86
+$lblEdE = New-Label 'End' 784 506 30
+$txtEdEnd = New-Text 816 507 86
+foreach ($tb in @($txtEdStart, $txtEdEnd)) { $tb.Font = New-Object System.Drawing.Font('Consolas', 10) }
+$lblInfo = New-Label '' 908 506 92     # "Length ..."
+$lblInfo.ForeColor = $cCyan; $lblInfo.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9.5)
 $lblHint2 = New-Label 'Drag the cyan handles to trim. Click the timeline to scrub.' 650 532 462
 $lblHint2.ForeColor = $cMuted
 
-$form.Controls.AddRange(@($mediaHost, $placeholder, $btnPlay, $lblClock, $btnSetStart, $btnSetEnd, $timeline, $lblInfo, $lblHint2))
+$form.Controls.AddRange(@($mediaHost, $placeholder, $btnPlay, $txtPos, $lblClock, $btnSetStart, $btnSetEnd, $timeline,
+        $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $lblHint2))
 
 # auto captions (right column, under the timeline)
 $chkCaps = New-Object System.Windows.Forms.CheckBox
@@ -333,11 +343,33 @@ $form.Controls.AddRange(@($chkCaps, $cmbCapStyle, $cmbCapLang, $chkCapReview))
 # The timeline replaces the typed Start/End row. The text boxes stay as hidden storage; only Reset trim is kept, next to the timeline.
 foreach ($c in @($lblTrim, $lblStart, $txtStart, $lblEnd, $txtEnd, $lblHint)) { $c.Visible = $false }
 $btnClearTrim.Text = 'Reset trim'; $btnClearTrim.Location = '1000,502'; $btnClearTrim.Size = '112,30'
-$lblInfo.Size = '340,24'
 $shift = 46
 foreach ($c in @($lblMode, $cmbMode, $lblQ, $cmbQ, $lblFps, $cmbFps, $lblEnc, $cmbEnc, $lblOut, $txtOut, $btnBrowse,
         $chkOpen, $chkSound, $btnGo, $btnStop, $btnOpen, $btnInstall, $barTrack, $status)) { $c.Top -= $shift }
 $form.ClientSize = New-Object System.Drawing.Size(1124, 644)
+$form.MinimumSize = $form.Size
+
+# Resizing / maximizing: the list and the video player take the extra room; everything else keeps its distance to the edge it hugs.
+$AS = [System.Windows.Forms.AnchorStyles]
+$aTL = $AS::Top -bor $AS::Left
+$aBL = $AS::Bottom -bor $AS::Left
+$aAll = $AS::Top -bor $AS::Bottom -bor $AS::Left -bor $AS::Right
+$aBLR = $AS::Bottom -bor $AS::Left -bor $AS::Right
+$list.IntegralHeight = $false
+$list.Anchor = $AS::Top -bor $AS::Bottom -bor $AS::Left
+foreach ($c in @($btnAdd, $btnRemove, $btnClear, $btnPreview, $lblMode, $cmbMode, $lblQ, $cmbQ, $lblFps, $cmbFps, $lblEnc, $cmbEnc,
+        $lblOut, $txtOut, $btnBrowse, $chkOpen, $chkSound, $btnGo, $btnStop, $btnOpen, $btnInstall, $barTrack, $status,
+        $btnPlay, $txtPos, $lblClock, $btnSetStart, $btnSetEnd, $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $btnClearTrim,
+        $lblHint2, $chkCaps, $cmbCapStyle, $cmbCapLang, $chkCapReview)) { $c.Anchor = $aBL }
+$mediaHost.Anchor = $aAll; $placeholder.Anchor = $aAll
+$timeline.Anchor = $aBLR
+$header.Anchor = $AS::Top -bor $AS::Left -bor $AS::Right
+$sub.Anchor = $AS::Top -bor $AS::Right
+$form.Add_SizeChanged({
+        $half = [int]($form.ClientSize.Width / 2)
+        $stripRed.Width = $half; $stripCyan.Left = $half; $stripCyan.Width = $form.ClientSize.Width - $half
+        $resizeTimer.Stop(); $resizeTimer.Start()      # sharp timeline thumbnails are rebuilt once the resizing settles
+    })
 
 # ---------- settings ----------
 $settingsFile = if ($env:TTC_TEST_FILE) { Join-Path $env:TEMP 'ttc_test_settings.json' } else { Join-Path $env:APPDATA 'TikTokConverter\settings.json' }
@@ -487,11 +519,21 @@ function XToTime([double]$x) {
     return [Math]::Max(0.0, [Math]::Min($script:ed.Dur, $t))
 }
 
-function Update-Info {
-    if (-not $script:ed) { $lblInfo.Text = ''; $lblClock.Text = '0:00.00 / 0:00.00'; return }
+# fill the time boxes (a box you are typing in is left alone unless $force)
+function Show-Times([bool]$force) {
     $ed = $script:ed
-    $lblInfo.Text = "Start $(Fmt-Clock $ed.Start)      End $(Fmt-Clock $ed.End)      Length $(Fmt-Clock ($ed.End - $ed.Start))"
-    $lblClock.Text = "$(Fmt-Clock $script:pos) / $(Fmt-Clock $ed.Dur)"
+    if (-not $ed) { $txtPos.Text = ''; $txtEdStart.Text = ''; $txtEdEnd.Text = ''; return }
+    if ($force -or -not $txtEdStart.Focused) { $txtEdStart.Text = Fmt-Clock $ed.Start }
+    if ($force -or -not $txtEdEnd.Focused) { $txtEdEnd.Text = Fmt-Clock $ed.End }
+    if ($force -or -not $txtPos.Focused) { $txtPos.Text = Fmt-Clock $script:pos; $txtPos.Tag = $txtPos.Text }   # Tag = what we last wrote, to tell "typed" from "untouched"
+}
+
+function Update-Info {
+    if (-not $script:ed) { $lblInfo.Text = ''; $lblClock.Text = ''; Show-Times $false; return }
+    $ed = $script:ed
+    $lblInfo.Text = "Length $(Fmt-Clock ($ed.End - $ed.Start))"
+    $lblClock.Text = "/ $(Fmt-Clock $ed.Dur)"
+    Show-Times $false
 }
 
 function Seek-To([double]$t, [bool]$force = $false) {
@@ -529,8 +571,9 @@ function Sync-EditorFromText {
 }
 
 function Get-Thumbs($info, [string]$path) {
-    if ($script:thumbCache.ContainsKey($path)) { return $script:thumbCache[$path] }
     $tw = [int]($timeline.Width - 2 * $trackX0)
+    $key = "$path|$tw"                                   # thumbnails are cached per timeline width (window can be resized)
+    if ($script:thumbCache.ContainsKey($key)) { return $script:thumbCache[$key] }
     $bmp = New-Object System.Drawing.Bitmap $tw, $trackH
     $g = [System.Drawing.Graphics]::FromImage($bmp); $g.Clear($cPanel)
     $cellW = 0.0; $i = 0; $x = 0.0
@@ -548,7 +591,7 @@ function Get-Thumbs($info, [string]$path) {
         $x += $cellW; $i++
     }
     $g.Dispose()
-    $script:thumbCache[$path] = $bmp
+    $script:thumbCache[$key] = $bmp
     return $bmp
 }
 
@@ -649,6 +692,61 @@ $form.Add_KeyDown({
         }
     })
 
+# rebuild the thumbnail strip when the timeline got a different width (window resized / maximized)
+$resizeTimer = New-Object System.Windows.Forms.Timer
+$resizeTimer.Interval = 400
+$resizeTimer.Add_Tick({
+        $resizeTimer.Stop()
+        if (-not $script:ed -or $form.WindowState -eq 'Minimized' -or $script:drag -ne '') { return }
+        $tw = [int]($timeline.Width - 2 * $trackX0)
+        if ($tw -lt 60 -or ($script:thumbBmp -and $script:thumbBmp.Width -eq $tw)) { return }
+        $form.Cursor = 'WaitCursor'
+        try { $script:thumbBmp = Get-Thumbs @{ Dur = $script:ed.Dur } $script:ed.Path }
+        finally { $form.Cursor = 'Default' }
+        $timeline.Invalidate()
+    })
+
+# typed times: Enter or clicking away applies them, Esc puts the old value back, anything invalid is ignored
+function Commit-Trim {
+    $ed = $script:ed
+    if (-not $ed) { return }
+    $s = Parse-Time $txtEdStart.Text; $e = Parse-Time $txtEdEnd.Text
+    if ($s -eq -1 -or $e -eq -1) { Show-Times $true; return }
+    $ss = if ($null -ne $s) { [Math]::Max(0.0, [Math]::Min([double]$s, $ed.Dur)) } else { 0.0 }
+    $ee = if ($null -ne $e) { [Math]::Min([double]$e, $ed.Dur) } else { $ed.Dur }
+    if ($ee - $ss -lt 0.2) { Show-Times $true; return }                      # keep at least 0.2 s
+    if ([Math]::Abs($ss - $ed.Start) -lt 0.005 -and [Math]::Abs($ee - $ed.End) -lt 0.005) { Show-Times $true; return }   # nothing changed
+    $startMoved = [Math]::Abs($ss - $ed.Start) -ge 0.005
+    Set-Trim $ss $ee
+    Show-Times $true
+    Refresh-List
+    Seek-To $(if ($startMoved) { $ss } else { [Math]::Max($ss, $ee - 0.5) }) $true     # jump to the edge you changed so you can see it
+}
+
+function Commit-Pos {
+    if (-not $script:ed) { return }
+    if ($txtPos.Text -eq [string]$txtPos.Tag) { return }      # not edited: don't jump back while the video is playing
+    $t = Parse-Time $txtPos.Text
+    if ($null -eq $t -or $t -eq -1) { Show-Times $true; return }
+    Seek-To ([double]$t) $true
+    Show-Times $true
+}
+
+foreach ($box in @($txtEdStart, $txtEdEnd, $txtPos)) {
+    $box.Add_KeyDown({
+            param($sender, $ev)
+            if ($ev.KeyCode -eq 'Return') {
+                $ev.SuppressKeyPress = $true; $ev.Handled = $true
+                if ([object]::ReferenceEquals($sender, $txtPos)) { Commit-Pos } else { Commit-Trim }
+                $sender.SelectAll()
+            }
+            elseif ($ev.KeyCode -eq 'Escape') { $ev.SuppressKeyPress = $true; Show-Times $true }
+        })
+    $box.Add_Enter({ param($sender, $ev) $sender.SelectAll() })
+}
+$txtEdStart.Add_Leave({ Commit-Trim }); $txtEdEnd.Add_Leave({ Commit-Trim })
+$txtPos.Add_Leave({ Commit-Pos })
+
 # playhead follows playback and stops at the trim end
 $playTimer = New-Object System.Windows.Forms.Timer
 $playTimer.Interval = 40
@@ -679,7 +777,8 @@ $timeline.Add_Paint({
             $g.DrawString('Timeline', $f, $bm, [float]($x0 + 8), [float]($top + 18)); $f.Dispose(); $bm.Dispose()
             return
         }
-        if ($script:thumbBmp) { $g.DrawImage($script:thumbBmp, [float]$x0, [float]$top) }
+        # drawn stretched to the track so a mid-resize frame still looks right; sharp thumbnails are rebuilt once resizing stops
+        if ($script:thumbBmp) { $g.DrawImage($script:thumbBmp, [float]$x0, [float]$top, [float]$tw, [float]$trackH) }
         $dur = $script:ed.Dur
         $xs = TimeToX $script:ed.Start; $xe = TimeToX $script:ed.End
 
@@ -1363,6 +1462,21 @@ if ($env:TTC_TEST_FILE) {
     $pump = { param($sec) $w = [Diagnostics.Stopwatch]::StartNew(); while ($w.Elapsed.TotalSeconds -lt $sec) { [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 30 } }
     & $pump 3
     "EDITOR: loaded=$([bool]$script:ed) dur=$(if ($script:ed) { $script:ed.Dur }) hasVideo=$($mediaEl.HasVideo) host=$($mediaHost.Visible) status=$($status.Text)"
+    if ($env:TTC_TEST_TYPE -and $script:ed) {      # "start,end,pos": type into the real boxes and apply them like Enter would
+        $parts = $env:TTC_TEST_TYPE -split ','
+        $txtEdStart.Text = $parts[0]; $txtEdEnd.Text = $parts[1]; Commit-Trim
+        "TYPED trim: start=$($script:ed.Start) end=$($script:ed.End) | boxes: '$($txtEdStart.Text)' '$($txtEdEnd.Text)' | list: $($list.Items[0].ToString().Split(']')[0].Split('[')[-1]) | label: $($lblInfo.Text)"
+        if ($parts.Count -gt 2) { $txtPos.Text = $parts[2]; Commit-Pos; "TYPED pos: pos=$($script:pos) box='$($txtPos.Text)' dur-label='$($lblClock.Text)'" }
+        $txtEdStart.Text = 'abc'; Commit-Trim; "INVALID input reverted to: '$($txtEdStart.Text)'"
+        $txtEdStart.Text = '0:09'; $txtEdEnd.Text = '0:08'; Commit-Trim; "START>END reverted to: '$($txtEdStart.Text)' '$($txtEdEnd.Text)'"
+    }
+    if ($env:TTC_TEST_SIZE) {                      # "w,h": simulate maximize/resize and report where things ended up
+        $wh = $env:TTC_TEST_SIZE -split ','
+        $before = $timeline.Width
+        $form.Size = New-Object System.Drawing.Size([int]$wh[0], [int]$wh[1])
+        & $pump 2.5
+        "RESIZED: client=$($form.ClientSize.Width)x$($form.ClientSize.Height) | player=$($mediaHost.Width)x$($mediaHost.Height) | timeline width $before -> $($timeline.Width), thumbs=$($script:thumbBmp.Width)px | list h=$($list.Height) | convert btn y=$($btnGo.Top) (bottom gap=$($form.ClientSize.Height - $btnGo.Bottom)) | strips=$($stripRed.Width)+$($stripCyan.Width)"
+    }
     if ($env:TTC_TEST_DRAG -and $script:ed) {
         $flags = [Reflection.BindingFlags]'NonPublic,Instance'
         $fire = { param($name, $x) $mi = [System.Windows.Forms.Control].GetMethod($name, $flags); $ma = [Windows.Forms.MouseEventArgs]::new([Windows.Forms.MouseButtons]::Left, 1, [int]$x, 20, 0); [void]$mi.Invoke($timeline, [object[]]@($ma)) }

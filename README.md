@@ -20,7 +20,7 @@ visually lossless quality, and lets you trim clips on a CapCut-style timeline fi
 
 ## Install (for users)
 
-Download the latest, [`TikTokConverter-Setup-v1.1.exe`](https://github.com/Noteworthy-d00m/tiktok-converter/raw/main/dist/TikTokConverter-Setup-v1.1.exe)
+Download the latest, [`TikTokConverter-Setup-v1.2.exe`](https://github.com/Noteworthy-d00m/tiktok-converter/raw/main/dist/TikTokConverter-Setup-v1.2.exe)
 (all versions are in the `dist` folder), and run it. Running a newer Setup over an older install updates it in place.
 On first run it:
 
@@ -35,7 +35,8 @@ Windows may show "Windows protected your PC" because the file isn't code-signed:
 
 | Version | File | What's in it |
 | --- | --- | --- |
-| **1.1** | [`TikTokConverter-Setup-v1.1.exe`](dist/TikTokConverter-Setup-v1.1.exe) | Auto captions (highlighted words, pill bubble, review window) |
+| **1.2** | [`TikTokConverter-Setup-v1.2.exe`](dist/TikTokConverter-Setup-v1.2.exe) | Type exact trim and playhead times; window resizes and maximizes properly |
+| 1.1 | [`TikTokConverter-Setup-v1.1.exe`](dist/TikTokConverter-Setup-v1.1.exe) | Auto captions (highlighted words, pill bubble, review window) |
 | 1.0 | [`TikTokConverter-Setup-v1.0.exe`](dist/TikTokConverter-Setup-v1.0.exe) | Batch conversion, trim timeline with player, blur/crop/bars, installer. Also git tag `v1.0` |
 
 ## How it's built
