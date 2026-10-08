@@ -313,46 +313,57 @@ $placeholder.ForeColor = $cMuted; $placeholder.TextAlign = 'MiddleCenter'
 $placeholder.Font = New-Object System.Drawing.Font('Segoe UI', 11)
 $placeholder.Text = "Add a video and click it in the list`r`nto preview and trim it here"
 
+# Right column rows (x 650..1112, everything on a shared grid):
+#   transport   y370  [Play]  position / length ............ [Set start [] [Set end ]]
+#   timeline    y412  (track edges line up with the player above)
+#   trim        y506  Start [clock]  End [clock] ........... [Apply] [Reset trim]
+#   info        y536  Length ...............  hint
+#   -------------------------------------------------------  (divider y566)
+#   captions    y574 / y606  two aligned columns (650..874 | 884..1112)
 $btnPlay = New-Btn 'Play' 650 370 80 34 'accent'
-$lblClock = New-Label '' 736 370 176     # playhead position / total length (display only)
-$lblClock.Font = New-Object System.Drawing.Font('Consolas', 9)
-$btnSetStart = New-Btn 'Set start [' 914 370 98 34
+$lblClock = New-Label '' 738 370 170     # playhead position / total length (display only)
+$lblClock.Height = 34; $lblClock.Font = New-Object System.Drawing.Font('Consolas', 9)
+$btnSetStart = New-Btn 'Set start [' 912 370 96 34
 $btnSetEnd = New-Btn 'Set end ]' 1014 370 98 34
 
+# the panel is 12px wider on each side than the player so the end handles fit; the track itself is exactly player-wide
 $timeline = New-Object DbPanel
-$timeline.Location = '650,412'; $timeline.Size = '462,88'; $timeline.BackColor = $cBg
+$timeline.Location = '638,412'; $timeline.Size = '486,88'; $timeline.BackColor = $cBg
 
-# trim range: drag the handles OR type exact times here (Enter or click away to apply).
+# trim range: drag the handles OR type exact times here (Apply / Enter / clicking away applies them).
 # The boxes are fixed-format clocks (h:mm:ss.cc): the separators can never be deleted, clearing a digit gives 0.
-$lblEdS = New-Label 'Start' 650 506 38
-$txtEdStart = New-TimeBox 690 507 98
-$lblEdE = New-Label 'End' 796 506 32
-$txtEdEnd = New-TimeBox 830 507 98
-$lblInfo = New-Label '' 936 506 176     # "Length ..."
+$lblEdS = New-Label 'Start' 650 506 36; $lblEdS.Height = 26
+$txtEdStart = New-TimeBox 688 506 96
+$lblEdE = New-Label 'End' 794 506 30; $lblEdE.Height = 26
+$txtEdEnd = New-TimeBox 826 506 96
+$lblInfo = New-Label '' 650 538 200     # "Length ..."
 $lblInfo.ForeColor = $cCyan; $lblInfo.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9.5)
-$lblHint2 = New-Label 'Drag the handles, or type times' 650 532 232
-$lblHint2.ForeColor = $cMuted
+$lblHint2 = New-Label 'Drag the handles, or type times' 812 538 300
+$lblHint2.ForeColor = $cMuted; $lblHint2.TextAlign = 'MiddleRight'
+
+$divider = New-Object System.Windows.Forms.Panel
+$divider.Location = '650,568'; $divider.Size = '462,1'; $divider.BackColor = $cBtn
 
 $form.Controls.AddRange(@($mediaHost, $placeholder, $btnPlay, $lblClock, $btnSetStart, $btnSetEnd, $timeline,
-        $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $lblHint2))
+        $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $lblHint2, $divider))
 
-# auto captions (right column, under the timeline)
+# auto captions (right column, under the divider): left column 650..874, right column 884..1112
 $chkCaps = New-Object System.Windows.Forms.CheckBox
-$chkCaps.Text = 'Add auto captions'; $chkCaps.Location = '650,566'; $chkCaps.Size = '186,26'
+$chkCaps.Text = 'Add auto captions'; $chkCaps.Location = '650,576'; $chkCaps.Size = '224,26'
 $chkCaps.ForeColor = $cCyan; $chkCaps.BackColor = [System.Drawing.Color]::Transparent
 $chkCaps.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9.5)
-$cmbCapStyle = New-Combo @('Yellow highlight', 'Green highlight', 'Pill bubble (yellow)') 840 565 272
-$cmbCapLang = New-Combo @('English (best accuracy)', 'Other languages (auto-detect)') 650 600 236
+$cmbCapStyle = New-Combo @('Yellow highlight', 'Green highlight', 'Pill bubble (yellow)') 884 576 228
+$cmbCapLang = New-Combo @('English (best accuracy)', 'Other languages (auto-detect)') 650 608 224
 $chkCapReview = New-Object System.Windows.Forms.CheckBox
-$chkCapReview.Text = 'Review text first'; $chkCapReview.Location = '896,602'; $chkCapReview.Size = '216,24'; $chkCapReview.Checked = $true
+$chkCapReview.Text = 'Review text first'; $chkCapReview.Location = '884,608'; $chkCapReview.Size = '228,26'; $chkCapReview.Checked = $true
 $chkCapReview.ForeColor = $cText; $chkCapReview.BackColor = [System.Drawing.Color]::Transparent
 $form.Controls.AddRange(@($chkCaps, $cmbCapStyle, $cmbCapLang, $chkCapReview))
 
-# The timeline replaces the typed Start/End row. The text boxes stay as hidden storage; only Reset trim is kept, next to the timeline.
+# The timeline replaces the typed Start/End row. The text boxes stay as hidden storage.
 foreach ($c in @($lblTrim, $lblStart, $txtStart, $lblEnd, $txtEnd, $lblHint)) { $c.Visible = $false }
-$btnClearTrim.Text = 'Reset trim'; $btnClearTrim.Location = '1000,528'; $btnClearTrim.Size = '112,28'
+$btnClearTrim.Text = 'Reset trim'; $btnClearTrim.Location = '1016,505'; $btnClearTrim.Size = '96,28'
 # Apply: moves the timeline handles to the Start/End you typed
-$btnApplyTrim = New-Btn 'Apply' 888 528 106 28 'accent'
+$btnApplyTrim = New-Btn 'Apply' 926 505 84 28 'accent'
 $form.Controls.Add($btnApplyTrim)
 $shift = 46
 foreach ($c in @($lblMode, $cmbMode, $lblQ, $cmbQ, $lblFps, $cmbFps, $lblEnc, $cmbEnc, $lblOut, $txtOut, $btnBrowse,
@@ -370,10 +381,12 @@ $list.IntegralHeight = $false
 $list.Anchor = $AS::Top -bor $AS::Bottom -bor $AS::Left
 foreach ($c in @($btnAdd, $btnRemove, $btnClear, $btnPreview, $lblMode, $cmbMode, $lblQ, $cmbQ, $lblFps, $cmbFps, $lblEnc, $cmbEnc,
         $lblOut, $txtOut, $btnBrowse, $chkOpen, $chkSound, $btnGo, $btnStop, $btnOpen, $btnInstall, $barTrack, $status,
-        $btnPlay, $lblClock, $btnSetStart, $btnSetEnd, $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $btnClearTrim, $btnApplyTrim,
-        $lblHint2, $chkCaps, $cmbCapStyle, $cmbCapLang, $chkCapReview)) { $c.Anchor = $aBL }
+        $btnPlay, $lblClock, $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $chkCaps, $cmbCapLang)) { $c.Anchor = $aBL }
+# things on the right-hand side of a row keep their distance to the right edge, so rows stay aligned when the window grows
+$aBR = $AS::Bottom -bor $AS::Right
+foreach ($c in @($btnSetStart, $btnSetEnd, $btnApplyTrim, $btnClearTrim, $lblHint2, $cmbCapStyle, $chkCapReview)) { $c.Anchor = $aBR }
 $mediaHost.Anchor = $aAll; $placeholder.Anchor = $aAll
-$timeline.Anchor = $aBLR
+$timeline.Anchor = $aBLR; $divider.Anchor = $aBLR
 $header.Anchor = $AS::Top -bor $AS::Left -bor $AS::Right
 $sub.Anchor = $AS::Top -bor $AS::Right
 $form.Add_SizeChanged({
@@ -505,7 +518,7 @@ $script:proxyTried = $false
 $script:seekSw = [Diagnostics.Stopwatch]::StartNew()
 $tmpDir = Join-Path $env:TEMP 'TikTokConverter'
 New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
-$trackX0 = 14.0
+$trackX0 = 12.0      # timeline panel is 12px wider than the player on each side, so the track lines up with the player edges
 $trackH = 56
 
 function Fmt-Clock([double]$t) {
