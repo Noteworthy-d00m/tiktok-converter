@@ -640,7 +640,16 @@ function Use-Proxy {
         $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardError = $true
         $p = [System.Diagnostics.Process]::Start($psi)
         $null = $p.StandardError.ReadToEndAsync()
-        while (-not $p.HasExited) { [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }
+        $list.Enabled = $false                       # picking another video meanwhile would start a second proxy job inside this loop
+        $limit = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            while (-not $p.HasExited) {
+                [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50
+                if ($form.IsDisposed -or $limit.Elapsed.TotalMinutes -gt 15) { try { $p.Kill() } catch {}; break }   # never wait forever
+            }
+        }
+        finally { $list.Enabled = $true }
+        $p.WaitForExit()
         if ($p.ExitCode -ne 0) { Remove-Item $px -Force -ErrorAction SilentlyContinue }
     }
     if (Test-Path $px) {
@@ -919,7 +928,7 @@ function Download-Verified([string]$url, [string]$dest, [string]$sha, [string]$l
         try {
             $sw = [Diagnostics.Stopwatch]::StartNew()
             while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
-                if ($script:cancel) { throw 'cancelled' }
+                if ($script:cancel -or $form.IsDisposed) { throw 'cancelled' }
                 $out.Write($buf, 0, $n); $got += $n
                 if ($sw.ElapsedMilliseconds -gt 150) {
                     $status.Text = "$label  $([int]($got / 1MB)) / $([int]($total / 1MB)) MB"
@@ -1007,7 +1016,7 @@ function Run-Whisper([string]$exe, [string]$model, [string]$wav, [string]$lang, 
     while (-not $p.HasExited) {
         [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 60
         $tick++; Set-Bar (($tick * 12) % 1000)
-        if ($script:cancel) { try { $p.Kill() } catch {}; break }
+        if ($script:cancel -or $form.IsDisposed) { try { $p.Kill() } catch {}; break }
     }
     $p.WaitForExit()
     $script:capProc = $null
@@ -1198,22 +1207,22 @@ function Make-Captions([string]$inFile, $start, $trimDur, $info) {
         $status.Text = "Captions: reading audio of $name ..."
         if (-not (Extract-Audio $inFile $start $trimDur $wav)) {
             $status.Text = "No audio found in $name, so no captions were added."
-            [void][Windows.Forms.MessageBox]::Show("$name has no usable audio, so no captions were added.", 'Auto captions'); return ''
+            Add-Notice "$name has no usable audio, so no captions were added."; return ''
         }
         $status.Text = "Captions: listening to $name (runs on your PC, may take a little while) ..."
         $r = Run-Whisper (Get-WhisperExe) $model $wav $CapModels[$mi].Lang $prefix
         Remove-Item -LiteralPath $wav -Force -ErrorAction SilentlyContinue
         if ($script:cancel) { return '' }
         if ($r.Code -ne 0 -or -not (Test-Path -LiteralPath "$prefix.json")) {
-            [void][Windows.Forms.MessageBox]::Show("The speech engine failed on $name.`n`n$($r.Err)", 'Auto captions'); return ''
+            Add-Notice "The speech engine failed on $name.`n`n$($r.Err)"; return ''
         }
         try { $words = Parse-Words "$prefix.json" }
-        catch { [void][Windows.Forms.MessageBox]::Show("Could not read the transcript for $name.`n`n$($_.Exception.Message)", 'Auto captions'); return '' }
+        catch { Add-Notice "Could not read the transcript for $name.`n`n$($_.Exception.Message)"; return '' }
         finally { Remove-Item -LiteralPath "$prefix.json" -Force -ErrorAction SilentlyContinue }
     }
     if (-not $words -or $words.Count -eq 0) {
         $status.Text = "No speech found in $name, so no captions were added."
-        [void][Windows.Forms.MessageBox]::Show("No speech was found in $name, so no captions were added.", 'Auto captions'); return ''
+        Add-Notice "No speech was found in $name, so no captions were added."; return ''
     }
     if ($chkCapReview.Checked -and -not $env:TTC_TEST_WORDS) {
         $edited = Show-CaptionEditor $words $name
@@ -1322,7 +1331,7 @@ function Start-Next {
     $dur = if ($to -gt 0) { $to - $from } else { 0.0 }
     if ($to -gt 0 -and $dur -le 0) {
         $script:failed++
-        [void][Windows.Forms.MessageBox]::Show("Trim range is empty for:`n$inFile", 'Trim error')
+        Add-Notice "$([IO.Path]::GetFileName($inFile)): the trim range is empty, so it was skipped."
         Start-Next; return
     }
     $trimmed = ($null -ne $e -or $null -ne $s)
@@ -1342,6 +1351,10 @@ function Start-Next {
         $outFile = Join-Path $txtOut.Text ("{0}_{1}.mp4" -f $base, $n)
         $n++
     }
+    if ($script:cancel) {      # Stop was pressed while this file was being prepared (probe / captions): don't start it
+        if ($assFile) { Remove-Item -LiteralPath $assFile -Force -ErrorAction SilentlyContinue }
+        Start-Next; return
+    }
     $script:current = @{ In = $inFile; Out = $outFile; Dur = $dur; Ass = $assFile }
     $tag = if ($trimmed) { "  [trim $(Fmt $from)s - $(Fmt ($from + $dur))s]" } else { '' }
     $status.Text = "Converting: $([IO.Path]::GetFileName($inFile))$tag  ($($script:done + $script:failed + 1) of $($script:total))"
@@ -1355,15 +1368,32 @@ function Start-Next {
     if ($assName -ne '') { $psi.WorkingDirectory = Split-Path $assFile }   # the ass filter reads the file by plain name (no path escaping needed)
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
     $psi.RedirectStandardError = $true
-    $script:proc = [System.Diagnostics.Process]::Start($psi)
-    $script:errTask = $script:proc.StandardError.ReadToEndAsync()
+    try {
+        $script:proc = [System.Diagnostics.Process]::Start($psi)
+        $script:errTask = $script:proc.StandardError.ReadToEndAsync()
+    }
+    catch {      # FFmpeg could not even be started: count it, report it once at the end and carry on with the next file
+        $script:proc = $null; $script:failed++
+        Add-Notice "$([IO.Path]::GetFileName($inFile)) could not be started: $($_.Exception.Message)"
+        Start-Next; return
+    }
 }
+
+# Problems are collected and shown in ONE box at the end, never one box per file / per tick.
+$script:notices = New-Object System.Collections.ArrayList
+function Add-Notice([string]$text) { if ($script:notices.Count -lt 50) { [void]$script:notices.Add($text) } }
 
 function Finish {
     $timer.Stop()
     $btnGo.Enabled = $true; $btnStop.Enabled = $false
     Set-Bar 0
-    $status.Text = if ($script:cancel) { "Stopped. $($script:done) done, $($script:failed) failed." } else { "Finished: $($script:done) converted, $($script:failed) failed. Saved in $($txtOut.Text)" }
+    $status.Text = if ($script:cancel) { "Stopped. $($script:done) done." + $(if ($script:failed -gt 0) { " $($script:failed) failed." }) } else { "Finished: $($script:done) converted, $($script:failed) failed. Saved in $($txtOut.Text)" }
+    if ($script:notices.Count -gt 0) {
+        $shown = @($script:notices | Select-Object -First 6)
+        $more = if ($script:notices.Count -gt 6) { "`n`n...and $($script:notices.Count - 6) more." } else { '' }
+        $script:notices.Clear()
+        [void][Windows.Forms.MessageBox]::Show(("Heads up:`n`n- " + ($shown -join "`n- ") + $more), 'TikTok Converter')
+    }
     if (-not $script:cancel -and $script:done -gt 0) {
         if ($chkSound.Checked) { [System.Media.SystemSounds]::Asterisk.Play() }
         if ($chkOpen.Checked) {
@@ -1390,14 +1420,27 @@ $timer.Add_Tick({
             catch {}
             return
         }
-        $code = $script:proc.ExitCode
-        if ($script:current.Ass) { Remove-Item -LiteralPath $script:current.Ass -Force -ErrorAction SilentlyContinue }
-        if ($code -eq 0) { $script:done++; $script:lastOut = $script:current.Out } else {
-            $script:failed++
-            [void][Windows.Forms.MessageBox]::Show("Failed: $($script:current.In)`n`n$($script:errTask.Result)", 'FFmpeg error')
+        # The process is over. Handle it exactly ONCE: take it out of $script:proc and stop this timer before doing
+        # anything else, so nothing (and no dialog) can be triggered again by the next tick.
+        $p = $script:proc; $script:proc = $null
+        $timer.Stop()
+        $cur = $script:current
+        try { $code = $p.ExitCode } catch { $code = -1 }
+        if ($cur.Ass) { Remove-Item -LiteralPath $cur.Ass -Force -ErrorAction SilentlyContinue }
+        if ($script:cancel) {
+            # user pressed Stop: not an error, just remove the half-written file
+            if ($cur.Out) { Remove-Item -LiteralPath $cur.Out -Force -ErrorAction SilentlyContinue }
         }
-        $script:proc = $null
-        Start-Next
+        elseif ($code -eq 0) { $script:done++; $script:lastOut = $cur.Out }
+        else {
+            $script:failed++
+            $detail = try { ([string]$script:errTask.Result).Trim() } catch { '' }
+            if ($detail.Length -gt 300) { $detail = $detail.Substring(0, 300) + '...' }
+            Add-Notice "$([IO.Path]::GetFileName($cur.In)) could not be converted.`n    $detail"
+            if ($cur.Out) { Remove-Item -LiteralPath $cur.Out -Force -ErrorAction SilentlyContinue }
+        }
+        Start-Next                       # starts the next file, or calls Finish
+        if ($script:proc) { $timer.Start() }
     })
 
 $btnGo.Add_Click({
@@ -1432,10 +1475,12 @@ $btnGo.Add_Click({
         $script:done = 0; $script:failed = 0; $script:cancel = $false; $script:lastOut = $null
         $btnGo.Enabled = $false; $btnStop.Enabled = $true
         Start-Next
-        $timer.Start()
+        if ($script:proc) { $timer.Start() }       # (Start-Next already called Finish if there was nothing to run)
     })
 $btnStop.Add_Click({
+        if ($script:cancel) { return }                     # already stopping: a second click does nothing
         $script:cancel = $true
+        $btnStop.Enabled = $false; $status.Text = 'Stopping...'
         if ($script:proc -and -not $script:proc.HasExited) { try { $script:proc.Kill() } catch {} }
         if ($script:capProc -and -not $script:capProc.HasExited) { try { $script:capProc.Kill() } catch {} }
     })
@@ -1479,7 +1524,7 @@ if ($env:TTC_TEST_FILE) {
     $chkOpen.Checked = $false; $chkSound.Checked = $false
     $txtOut.Text = $env:TTC_TEST_OUT
     if ($env:TTC_TEST_CAPS) { $chkCaps.Checked = $true; $cmbCapStyle.SelectedIndex = [int]$env:TTC_TEST_CAPSTYLE; $cmbMode.SelectedIndex = 0 }
-    Add-Files @($env:TTC_TEST_FILE)                     # goes through the real add + auto-select path
+    Add-Files @($env:TTC_TEST_FILE -split ";")                     # goes through the real add + auto-select path
     if ($env:TTC_TEST_START) { $txtStart.Text = $env:TTC_TEST_START }   # goes through the real TextChanged path
     if ($env:TTC_TEST_END) { $txtEnd.Text = $env:TTC_TEST_END }
     $pump = { param($sec) $w = [Diagnostics.Stopwatch]::StartNew(); while ($w.Elapsed.TotalSeconds -lt $sec) { [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 30 } }
@@ -1532,10 +1577,44 @@ if ($env:TTC_TEST_FILE) {
         $bmp.Save($env:TTC_SHOT); $bmp.Dispose()
     }
     "LIST: " + (($list.Items | ForEach-Object { $_.ToString() }) -join ' | ')
+    if ($env:TTC_TEST_STOP -or $env:TTC_TEST_COUNT) {      # press Stop N seconds into a conversion and count how many message boxes pop up
+        Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Runtime.InteropServices;
+public static class WinCount {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumThreadWindows(uint t, EnumProc p, IntPtr l);
+    [DllImport("user32.dll")] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    // counts (and closes) visible dialog boxes (#32770 = MessageBox) on this thread
+    public static int CountAndClose() {
+        int n = 0;
+        EnumThreadWindows(GetCurrentThreadId(), delegate (IntPtr h, IntPtr l) {
+            var sb = new StringBuilder(64); GetClassName(h, sb, 64);
+            if (sb.ToString() == "#32770" && IsWindowVisible(h)) { n++; PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); }
+            return true; }, IntPtr.Zero);
+        return n;
+    }
+}
+'@
+        $script:dlgSeen = 0
+        $dlgTimer = New-Object System.Windows.Forms.Timer; $dlgTimer.Interval = 100
+        $dlgTimer.Add_Tick({ $script:dlgSeen += [WinCount]::CountAndClose() }); $dlgTimer.Start()
+    }
     $btnGo.PerformClick()
+    if ($env:TTC_TEST_STOP) {
+        & $pump ([double]$env:TTC_TEST_STOP)
+        "BEFORE STOP: converting=$([bool]$script:proc) done=$($script:done) failed=$($script:failed) bar=$($barFill.Width)px"
+        $btnStop.PerformClick()
+        & $pump 5
+        $outs = @(Get-ChildItem $env:TTC_TEST_OUT -Filter *.mp4 -ErrorAction SilentlyContinue)
+        "AFTER STOP: dialogs that popped up=$($script:dlgSeen) | Convert enabled=$($btnGo.Enabled) | done=$($script:done) failed=$($script:failed) | partial files left=$($outs.Count) | status='$($status.Text)'"
+    }
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while (-not $btnGo.Enabled -and $sw.Elapsed.TotalSeconds -lt 120) { [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }
     "STATUS: " + $status.Text
+    if ($env:TTC_TEST_COUNT) { "DIALOGS shown during the run: $script:dlgSeen (Finish message boxes included)" }
     $form.Close(); return
 }
 
