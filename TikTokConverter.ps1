@@ -191,6 +191,17 @@ function New-Text($x, $y, $w) {
     $t.BackColor = $cPanel; $t.ForeColor = $cText; $t.BorderStyle = 'FixedSingle'
     return $t
 }
+# fixed-format time box h:mm:ss.cc  (the ":" and "." are part of the mask, so they can't be erased; an erased digit shows 0)
+function New-TimeBox($x, $y, $w) {
+    $m = New-Object System.Windows.Forms.MaskedTextBox
+    $m.Mask = '0\:00\:00\.00'; $m.PromptChar = '0'
+    $m.ResetOnPrompt = $false; $m.ResetOnSpace = $true     # a typed "0" is a real digit (not "erase"); space erases a digit back to 0
+    $m.InsertKeyMode = 'Overwrite'; $m.BeepOnError = $false; $m.HidePromptOnLeave = $false
+    $m.Location = New-Object System.Drawing.Point($x, $y); $m.Size = New-Object System.Drawing.Size($w, 26)
+    $m.BackColor = $cPanel; $m.ForeColor = $cText; $m.BorderStyle = 'FixedSingle'
+    $m.Font = New-Object System.Drawing.Font('Consolas', 10)
+    return $m
+}
 # kind: 'primary' (red), 'accent' (cyan), 'normal' (slate)
 function New-Btn($text, $x, $y, $w, $h = 32, $kind = 'normal') {
     $b = New-Object System.Windows.Forms.Button
@@ -303,29 +314,26 @@ $placeholder.Font = New-Object System.Drawing.Font('Segoe UI', 11)
 $placeholder.Text = "Add a video and click it in the list`r`nto preview and trim it here"
 
 $btnPlay = New-Btn 'Play' 650 370 80 34 'accent'
-# playhead position: type a time and press Enter to jump there
-$txtPos = New-Text 738 374 84
-$lblClock = New-Label '' 824 372 90     # "/ total length"
-$lblClock.Font = New-Object System.Drawing.Font('Consolas', 9.5)
-$btnSetStart = New-Btn 'Set start [' 916 370 96 34
-$btnSetEnd = New-Btn 'Set end ]' 1016 370 96 34
-foreach ($tb in @($txtPos)) { $tb.Font = New-Object System.Drawing.Font('Consolas', 10) }
+$lblClock = New-Label '' 736 370 176     # playhead position / total length (display only)
+$lblClock.Font = New-Object System.Drawing.Font('Consolas', 9)
+$btnSetStart = New-Btn 'Set start [' 914 370 98 34
+$btnSetEnd = New-Btn 'Set end ]' 1014 370 98 34
 
 $timeline = New-Object DbPanel
 $timeline.Location = '650,412'; $timeline.Size = '462,88'; $timeline.BackColor = $cBg
 
-# trim range: drag the handles OR type exact times here (Enter or click away to apply)
+# trim range: drag the handles OR type exact times here (Enter or click away to apply).
+# The boxes are fixed-format clocks (h:mm:ss.cc): the separators can never be deleted, clearing a digit gives 0.
 $lblEdS = New-Label 'Start' 650 506 38
-$txtEdStart = New-Text 690 507 86
-$lblEdE = New-Label 'End' 784 506 30
-$txtEdEnd = New-Text 816 507 86
-foreach ($tb in @($txtEdStart, $txtEdEnd)) { $tb.Font = New-Object System.Drawing.Font('Consolas', 10) }
-$lblInfo = New-Label '' 908 506 92     # "Length ..."
+$txtEdStart = New-TimeBox 690 507 98
+$lblEdE = New-Label 'End' 796 506 32
+$txtEdEnd = New-TimeBox 830 507 98
+$lblInfo = New-Label '' 936 506 176     # "Length ..."
 $lblInfo.ForeColor = $cCyan; $lblInfo.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9.5)
-$lblHint2 = New-Label 'Drag the cyan handles to trim. Click the timeline to scrub.' 650 532 462
+$lblHint2 = New-Label 'Drag the cyan handles to trim, or type exact times.' 650 532 340
 $lblHint2.ForeColor = $cMuted
 
-$form.Controls.AddRange(@($mediaHost, $placeholder, $btnPlay, $txtPos, $lblClock, $btnSetStart, $btnSetEnd, $timeline,
+$form.Controls.AddRange(@($mediaHost, $placeholder, $btnPlay, $lblClock, $btnSetStart, $btnSetEnd, $timeline,
         $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $lblHint2))
 
 # auto captions (right column, under the timeline)
@@ -342,7 +350,7 @@ $form.Controls.AddRange(@($chkCaps, $cmbCapStyle, $cmbCapLang, $chkCapReview))
 
 # The timeline replaces the typed Start/End row. The text boxes stay as hidden storage; only Reset trim is kept, next to the timeline.
 foreach ($c in @($lblTrim, $lblStart, $txtStart, $lblEnd, $txtEnd, $lblHint)) { $c.Visible = $false }
-$btnClearTrim.Text = 'Reset trim'; $btnClearTrim.Location = '1000,502'; $btnClearTrim.Size = '112,30'
+$btnClearTrim.Text = 'Reset trim'; $btnClearTrim.Location = '1000,528'; $btnClearTrim.Size = '112,28'
 $shift = 46
 foreach ($c in @($lblMode, $cmbMode, $lblQ, $cmbQ, $lblFps, $cmbFps, $lblEnc, $cmbEnc, $lblOut, $txtOut, $btnBrowse,
         $chkOpen, $chkSound, $btnGo, $btnStop, $btnOpen, $btnInstall, $barTrack, $status)) { $c.Top -= $shift }
@@ -359,7 +367,7 @@ $list.IntegralHeight = $false
 $list.Anchor = $AS::Top -bor $AS::Bottom -bor $AS::Left
 foreach ($c in @($btnAdd, $btnRemove, $btnClear, $btnPreview, $lblMode, $cmbMode, $lblQ, $cmbQ, $lblFps, $cmbFps, $lblEnc, $cmbEnc,
         $lblOut, $txtOut, $btnBrowse, $chkOpen, $chkSound, $btnGo, $btnStop, $btnOpen, $btnInstall, $barTrack, $status,
-        $btnPlay, $txtPos, $lblClock, $btnSetStart, $btnSetEnd, $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $btnClearTrim,
+        $btnPlay, $lblClock, $btnSetStart, $btnSetEnd, $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $btnClearTrim,
         $lblHint2, $chkCaps, $cmbCapStyle, $cmbCapLang, $chkCapReview)) { $c.Anchor = $aBL }
 $mediaHost.Anchor = $aAll; $placeholder.Anchor = $aAll
 $timeline.Anchor = $aBLR
@@ -519,20 +527,28 @@ function XToTime([double]$x) {
     return [Math]::Max(0.0, [Math]::Min($script:ed.Dur, $t))
 }
 
-# fill the time boxes (a box you are typing in is left alone unless $force)
+# always h:mm:ss.cc (what the fixed-format Start/End boxes show)
+function Fmt-Mask([double]$t) {
+    $t = [Math]::Round([Math]::Min(35999.99, [Math]::Max(0.0, $t)), 2)
+    $h = [int][Math]::Floor($t / 3600); $r = $t - 3600 * $h
+    $m = [int][Math]::Floor($r / 60); $s = $r - 60 * $m
+    return ('{0}:{1}:{2}' -f $h, $m.ToString('00'), $s.ToString('00.00', $inv))
+}
+
+# fill the Start/End boxes (a box you are typing in is left alone unless $force)
 function Show-Times([bool]$force) {
     $ed = $script:ed
-    if (-not $ed) { $txtPos.Text = ''; $txtEdStart.Text = ''; $txtEdEnd.Text = ''; return }
-    if ($force -or -not $txtEdStart.Focused) { $txtEdStart.Text = Fmt-Clock $ed.Start }
-    if ($force -or -not $txtEdEnd.Focused) { $txtEdEnd.Text = Fmt-Clock $ed.End }
-    if ($force -or -not $txtPos.Focused) { $txtPos.Text = Fmt-Clock $script:pos; $txtPos.Tag = $txtPos.Text }   # Tag = what we last wrote, to tell "typed" from "untouched"
+    $txtEdStart.Enabled = [bool]$ed; $txtEdEnd.Enabled = [bool]$ed
+    if (-not $ed) { return }
+    if ($force -or -not $txtEdStart.Focused) { $txtEdStart.Text = Fmt-Mask $ed.Start }
+    if ($force -or -not $txtEdEnd.Focused) { $txtEdEnd.Text = Fmt-Mask $ed.End }
 }
 
 function Update-Info {
     if (-not $script:ed) { $lblInfo.Text = ''; $lblClock.Text = ''; Show-Times $false; return }
     $ed = $script:ed
     $lblInfo.Text = "Length $(Fmt-Clock ($ed.End - $ed.Start))"
-    $lblClock.Text = "/ $(Fmt-Clock $ed.Dur)"
+    $lblClock.Text = "$(Fmt-Clock $script:pos) / $(Fmt-Clock $ed.Dur)"
     Show-Times $false
 }
 
@@ -687,7 +703,7 @@ $btnSetEnd.Add_Click({
 $form.KeyPreview = $true
 $form.Add_KeyDown({
         param($sender, $ev)
-        if ($ev.KeyCode -eq 'Space' -and -not ($form.ActiveControl -is [System.Windows.Forms.TextBox]) -and -not ($form.ActiveControl -is [System.Windows.Forms.ComboBox]) -and -not ($form.ActiveControl -is [System.Windows.Forms.Button])) {
+        if ($ev.KeyCode -eq 'Space' -and -not ($form.ActiveControl -is [System.Windows.Forms.TextBoxBase]) -and -not ($form.ActiveControl -is [System.Windows.Forms.ComboBox]) -and -not ($form.ActiveControl -is [System.Windows.Forms.Button])) {
             Toggle-Play; $ev.SuppressKeyPress = $true; $ev.Handled = $true
         }
     })
@@ -710,10 +726,11 @@ $resizeTimer.Add_Tick({
 function Commit-Trim {
     $ed = $script:ed
     if (-not $ed) { return }
-    $s = Parse-Time $txtEdStart.Text; $e = Parse-Time $txtEdEnd.Text
+    # erased digits come back from the masked box as spaces: they mean 0 (the box displays them as 0)
+    $s = Parse-Time ($txtEdStart.Text -replace ' ', '0'); $e = Parse-Time ($txtEdEnd.Text -replace ' ', '0')
     if ($s -eq -1 -or $e -eq -1) { Show-Times $true; return }
     $ss = if ($null -ne $s) { [Math]::Max(0.0, [Math]::Min([double]$s, $ed.Dur)) } else { 0.0 }
-    $ee = if ($null -ne $e) { [Math]::Min([double]$e, $ed.Dur) } else { $ed.Dur }
+    $ee = if ($null -ne $e -and $e -gt 0) { [Math]::Min([double]$e, $ed.Dur) } else { $ed.Dur }     # End cleared (all zeros) = to the end of the video
     if ($ee - $ss -lt 0.2) { Show-Times $true; return }                      # keep at least 0.2 s
     if ([Math]::Abs($ss - $ed.Start) -lt 0.005 -and [Math]::Abs($ee - $ed.End) -lt 0.005) { Show-Times $true; return }   # nothing changed
     $startMoved = [Math]::Abs($ss - $ed.Start) -ge 0.005
@@ -723,29 +740,16 @@ function Commit-Trim {
     Seek-To $(if ($startMoved) { $ss } else { [Math]::Max($ss, $ee - 0.5) }) $true     # jump to the edge you changed so you can see it
 }
 
-function Commit-Pos {
-    if (-not $script:ed) { return }
-    if ($txtPos.Text -eq [string]$txtPos.Tag) { return }      # not edited: don't jump back while the video is playing
-    $t = Parse-Time $txtPos.Text
-    if ($null -eq $t -or $t -eq -1) { Show-Times $true; return }
-    Seek-To ([double]$t) $true
-    Show-Times $true
-}
-
-foreach ($box in @($txtEdStart, $txtEdEnd, $txtPos)) {
+foreach ($box in @($txtEdStart, $txtEdEnd)) {
     $box.Add_KeyDown({
             param($sender, $ev)
-            if ($ev.KeyCode -eq 'Return') {
-                $ev.SuppressKeyPress = $true; $ev.Handled = $true
-                if ([object]::ReferenceEquals($sender, $txtPos)) { Commit-Pos } else { Commit-Trim }
-                $sender.SelectAll()
-            }
+            if ($ev.KeyCode -eq 'Return') { $ev.SuppressKeyPress = $true; $ev.Handled = $true; Commit-Trim }
             elseif ($ev.KeyCode -eq 'Escape') { $ev.SuppressKeyPress = $true; Show-Times $true }
         })
-    $box.Add_Enter({ param($sender, $ev) $sender.SelectAll() })
+    # tabbing in puts the caret at the first digit (typing then overwrites digit by digit); a mouse click picks its own spot
+    $box.Add_GotFocus({ param($sender, $ev) $sender.SelectionStart = 0; $sender.SelectionLength = 0 })
 }
 $txtEdStart.Add_Leave({ Commit-Trim }); $txtEdEnd.Add_Leave({ Commit-Trim })
-$txtPos.Add_Leave({ Commit-Pos })
 
 # playhead follows playback and stops at the trim end
 $playTimer = New-Object System.Windows.Forms.Timer
@@ -1462,13 +1466,17 @@ if ($env:TTC_TEST_FILE) {
     $pump = { param($sec) $w = [Diagnostics.Stopwatch]::StartNew(); while ($w.Elapsed.TotalSeconds -lt $sec) { [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 30 } }
     & $pump 3
     "EDITOR: loaded=$([bool]$script:ed) dur=$(if ($script:ed) { $script:ed.Dur }) hasVideo=$($mediaEl.HasVideo) host=$($mediaHost.Visible) status=$($status.Text)"
-    if ($env:TTC_TEST_TYPE -and $script:ed) {      # "start,end,pos": type into the real boxes and apply them like Enter would
+    if ($env:TTC_TEST_TYPE -and $script:ed) {      # "start,end" in h:mm:ss.cc: type into the real masked boxes and apply them like Enter would
         $parts = $env:TTC_TEST_TYPE -split ','
         $txtEdStart.Text = $parts[0]; $txtEdEnd.Text = $parts[1]; Commit-Trim
         "TYPED trim: start=$($script:ed.Start) end=$($script:ed.End) | boxes: '$($txtEdStart.Text)' '$($txtEdEnd.Text)' | list: $($list.Items[0].ToString().Split(']')[0].Split('[')[-1]) | label: $($lblInfo.Text)"
-        if ($parts.Count -gt 2) { $txtPos.Text = $parts[2]; Commit-Pos; "TYPED pos: pos=$($script:pos) box='$($txtPos.Text)' dur-label='$($lblClock.Text)'" }
-        $txtEdStart.Text = 'abc'; Commit-Trim; "INVALID input reverted to: '$($txtEdStart.Text)'"
-        $txtEdStart.Text = '0:09'; $txtEdEnd.Text = '0:08'; Commit-Trim; "START>END reverted to: '$($txtEdStart.Text)' '$($txtEdEnd.Text)'"
+        $txtEdStart.Clear(); "AFTER CLEARING START BOX: '$($txtEdStart.Text)'  (colons and dot kept)"
+        Commit-Trim; "CLEARED start applied as 0: start=$($script:ed.Start) -> box '$($txtEdStart.Text)'"
+        $txtEdStart.Text = '0:00:09.00'; $txtEdEnd.Text = '0:00:08.00'; Commit-Trim; "START>END reverted to: '$($txtEdStart.Text)' '$($txtEdEnd.Text)'"
+        $txtEdEnd.Clear(); Commit-Trim; "CLEARED end = end of video: '$($txtEdEnd.Text)'"
+        $txtEdStart.Text = '0:00:01.50'; $txtEdEnd.Text = '0:99:99.99'; Commit-Trim; "OVER-LONG end clamped: start=$($script:ed.Start) end=$($script:ed.End) box '$($txtEdEnd.Text)'"
+        $txtEdStart.Text = $parts[0]; $txtEdEnd.Text = $parts[1]; Commit-Trim
+        "SPACE key target check: MaskedTextBox is TextBoxBase = $($txtEdStart -is [System.Windows.Forms.TextBoxBase])"
     }
     if ($env:TTC_TEST_SIZE) {                      # "w,h": simulate maximize/resize and report where things ended up
         $wh = $env:TTC_TEST_SIZE -split ','
