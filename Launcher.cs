@@ -13,7 +13,7 @@ using Microsoft.Win32;
 static class Launcher
 {
     const string AppName = "TikTok Converter";
-    const string Version = "1.3";   // single source of truth: Build.ps1 reads it for the file name
+    const string Version = "1.4";   // single source of truth: Build.ps1 reads it for the file name
     const string RegKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\TikTokConverter";
     // { zip url, checksum url, file name to look for in the checksum file (null = file holds just the hash) }
     static readonly string[][] FfmpegSources = {

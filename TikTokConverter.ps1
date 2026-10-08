@@ -330,7 +330,7 @@ $lblEdE = New-Label 'End' 796 506 32
 $txtEdEnd = New-TimeBox 830 507 98
 $lblInfo = New-Label '' 936 506 176     # "Length ..."
 $lblInfo.ForeColor = $cCyan; $lblInfo.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9.5)
-$lblHint2 = New-Label 'Drag the cyan handles to trim, or type exact times.' 650 532 340
+$lblHint2 = New-Label 'Drag the handles, or type times' 650 532 232
 $lblHint2.ForeColor = $cMuted
 
 $form.Controls.AddRange(@($mediaHost, $placeholder, $btnPlay, $lblClock, $btnSetStart, $btnSetEnd, $timeline,
@@ -351,6 +351,9 @@ $form.Controls.AddRange(@($chkCaps, $cmbCapStyle, $cmbCapLang, $chkCapReview))
 # The timeline replaces the typed Start/End row. The text boxes stay as hidden storage; only Reset trim is kept, next to the timeline.
 foreach ($c in @($lblTrim, $lblStart, $txtStart, $lblEnd, $txtEnd, $lblHint)) { $c.Visible = $false }
 $btnClearTrim.Text = 'Reset trim'; $btnClearTrim.Location = '1000,528'; $btnClearTrim.Size = '112,28'
+# Apply: moves the timeline handles to the Start/End you typed
+$btnApplyTrim = New-Btn 'Apply' 888 528 106 28 'accent'
+$form.Controls.Add($btnApplyTrim)
 $shift = 46
 foreach ($c in @($lblMode, $cmbMode, $lblQ, $cmbQ, $lblFps, $cmbFps, $lblEnc, $cmbEnc, $lblOut, $txtOut, $btnBrowse,
         $chkOpen, $chkSound, $btnGo, $btnStop, $btnOpen, $btnInstall, $barTrack, $status)) { $c.Top -= $shift }
@@ -367,7 +370,7 @@ $list.IntegralHeight = $false
 $list.Anchor = $AS::Top -bor $AS::Bottom -bor $AS::Left
 foreach ($c in @($btnAdd, $btnRemove, $btnClear, $btnPreview, $lblMode, $cmbMode, $lblQ, $cmbQ, $lblFps, $cmbFps, $lblEnc, $cmbEnc,
         $lblOut, $txtOut, $btnBrowse, $chkOpen, $chkSound, $btnGo, $btnStop, $btnOpen, $btnInstall, $barTrack, $status,
-        $btnPlay, $lblClock, $btnSetStart, $btnSetEnd, $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $btnClearTrim,
+        $btnPlay, $lblClock, $btnSetStart, $btnSetEnd, $lblEdS, $txtEdStart, $lblEdE, $txtEdEnd, $lblInfo, $btnClearTrim, $btnApplyTrim,
         $lblHint2, $chkCaps, $cmbCapStyle, $cmbCapLang, $chkCapReview)) { $c.Anchor = $aBL }
 $mediaHost.Anchor = $aAll; $placeholder.Anchor = $aAll
 $timeline.Anchor = $aBLR
@@ -723,6 +726,8 @@ $resizeTimer.Add_Tick({
     })
 
 # typed times: Enter or clicking away applies them, Esc puts the old value back, anything invalid is ignored
+# Applies the typed Start/End: moves the timeline handles, Length and the list tag.
+# Runs from the Apply button, Enter, or when you click away from a box. Esc puts the old value back.
 function Commit-Trim {
     $ed = $script:ed
     if (-not $ed) { return }
@@ -750,6 +755,7 @@ foreach ($box in @($txtEdStart, $txtEdEnd)) {
     $box.Add_GotFocus({ param($sender, $ev) $sender.SelectionStart = 0; $sender.SelectionLength = 0 })
 }
 $txtEdStart.Add_Leave({ Commit-Trim }); $txtEdEnd.Add_Leave({ Commit-Trim })
+$btnApplyTrim.Add_Click({ Commit-Trim })
 
 # playhead follows playback and stops at the trim end
 $playTimer = New-Object System.Windows.Forms.Timer
@@ -1468,7 +1474,10 @@ if ($env:TTC_TEST_FILE) {
     "EDITOR: loaded=$([bool]$script:ed) dur=$(if ($script:ed) { $script:ed.Dur }) hasVideo=$($mediaEl.HasVideo) host=$($mediaHost.Visible) status=$($status.Text)"
     if ($env:TTC_TEST_TYPE -and $script:ed) {      # "start,end" in h:mm:ss.cc: type into the real masked boxes and apply them like Enter would
         $parts = $env:TTC_TEST_TYPE -split ','
-        $txtEdStart.Text = $parts[0]; $txtEdEnd.Text = $parts[1]; Commit-Trim
+        $txtEdStart.Text = $parts[0]; $txtEdEnd.Text = $parts[1]
+        "BEFORE APPLY (boxes typed, nothing clicked): slider start=$($script:ed.Start) end=$($script:ed.End)"
+        $btnApplyTrim.PerformClick()
+        "AFTER CLICKING APPLY: slider start=$($script:ed.Start) end=$($script:ed.End) | label: $($lblInfo.Text) | playhead=$($script:pos)"
         "TYPED trim: start=$($script:ed.Start) end=$($script:ed.End) | boxes: '$($txtEdStart.Text)' '$($txtEdEnd.Text)' | list: $($list.Items[0].ToString().Split(']')[0].Split('[')[-1]) | label: $($lblInfo.Text)"
         $txtEdStart.Clear(); "AFTER CLEARING START BOX: '$($txtEdStart.Text)'  (colons and dot kept)"
         Commit-Trim; "CLEARED start applied as 0: start=$($script:ed.Start) -> box '$($txtEdStart.Text)'"
